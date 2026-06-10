@@ -1,0 +1,119 @@
+---
+title: "Instance Modes: Controlling Fineract Node Roles"
+sidebarTitle: "Instance Modes"
+description: "Fineract instance modes gate which operations each node serves — read, write, batch-worker, or batch-manager. Covers FineractModeProperties, the API filter, and deployment patterns."
+---
+
+Fineract supports deploying multiple nodes with different roles by toggling four boolean mode flags at startup or at runtime. This allows architectures where read-replica API nodes serve GET requests, a separate write node handles mutations, and batch-worker nodes only process COB partitions — all running the same JAR with different configuration.
+
+## The Four Mode Flags
+
+Mode flags are properties under `fineract.mode.*`:
+
+| Property | Env Var | Default | Controls |
+|----------|---------|---------|---------|
+| `fineract.mode.read-enabled` | `FINERACT_MODE_READ_ENABLED` | `true` | Allows GET/read requests |
+| `fineract.mode.write-enabled` | `FINERACT_MODE_WRITE_ENABLED` | `true` | Allows POST/PUT/DELETE requests |
+| `fineract.mode.batch-worker-enabled` | `FINERACT_MODE_BATCH_WORKER_ENABLED` | `true` | Node processes batch partitions |
+| `fineract.mode.batch-manager-enabled` | `FINERACT_MODE_BATCH_MANAGER_ENABLED` | `true` | Node manages batch job partitioning |
+
+All four default to `true` — a single-node deployment handles everything. Disabling specific flags turns the node into a specialized role.
+
+## FineractModeProperties
+
+The flags are stored in `FineractProperties.FineractModeProperties` (defined in `fineract-core`):
+
+```java FineractProperties.java (mode section)
+@Data
+public static class FineractModeProperties {
+    private boolean readEnabled;
+    private boolean writeEnabled;
+    private boolean batchWorkerEnabled;
+    private boolean batchManagerEnabled;
+}
+```
+
+The `FineractProperties` bean is injected wherever mode checks are needed, particularly in `FineractInstanceModeApiFilter`.
+
+## The API Filter
+
+`FineractInstanceModeApiFilter` (in `fineract-core/src/main/java/org/apache/fineract/infrastructure/instancemode/filter/`) is a `OncePerRequestFilter` that enforces mode restrictions on every HTTP request:
+
+```java FineractInstanceModeApiFilter.java (key logic)
+private static final List<ExceptionListItem> EXCEPTION_LIST = List.of(
+    item(FineractProperties.FineractModeProperties::isBatchManagerEnabled,
+         pi -> pi.startsWith("/v1/jobs")),
+    item(FineractProperties.FineractModeProperties::isBatchManagerEnabled,
+         pi -> pi.startsWith("/v1/scheduler")),
+    item(FineractProperties.FineractModeProperties::isBatchManagerEnabled,
+         pi -> pi.startsWith("/v1/loans/catch-up")),
+    item(FineractProperties.FineractModeProperties::isBatchManagerEnabled,
+         pi -> pi.startsWith("/v1/loans/is-catch-up-running")),
+    item(p -> true, pi -> pi.startsWith("/v1/instance-mode")),
+    item(p -> true, pi -> pi.startsWith("/v1/batches"))
+);
+```
+
+The filter logic:
+1. Always allows paths on the exception list (actuator, `/v1/instance-mode`, `/v1/batches`).
+2. Rejects requests to batch-manager paths if `batchManagerEnabled = false`.
+3. For all other paths: allows if `readEnabled = true` AND request is a GET/HEAD, or if `writeEnabled = true`.
+4. Returns HTTP 405 for rejected requests.
+
+## Runtime Mode Switching API
+
+`InstanceModeApiResource` at `/v1/instance-mode` allows changing mode flags at runtime:
+
+```java InstanceModeApiResource.java
+@PUT
+@Path("/v1/instance-mode")
+public Response changeMode(ChangeInstanceModeRequest request) {
+    fineractProperties.getMode().setReadEnabled(request.isReadEnabled());
+    fineractProperties.getMode().setWriteEnabled(request.isWriteEnabled());
+    fineractProperties.getMode().setBatchWorkerEnabled(request.isBatchWorkerEnabled());
+    fineractProperties.getMode().setBatchManagerEnabled(request.isBatchManagerEnabled());
+    return Response.ok().build();
+}
+```
+
+<Warning>
+`InstanceModeApiResource` is annotated `@Profile(FineractProfiles.TEST)` — it is only available when the Spring `test` profile is active. **Do not use this in production deployments.** For production mode control, set the environment variables at startup.
+</Warning>
+
+## Deployment Patterns
+
+### Read/Write Split
+
+```
+Read Node (FINERACT_MODE_WRITE_ENABLED=false, batch flags=false)
+  └── Serves GET /v1/loans, GET /v1/clients, etc.
+  └── Points to PostgreSQL read replica
+
+Write Node (FINERACT_MODE_READ_ENABLED=false)
+  └── Serves POST/PUT/DELETE requests
+  └── Points to PostgreSQL primary
+```
+
+### Batch Worker/Manager Split
+
+```
+Batch Manager Node (FINERACT_MODE_READ_ENABLED=false, FINERACT_MODE_WRITE_ENABLED=false)
+  └── Triggers LOAN_COB job, partitions work
+  └── Publishes partition messages to Kafka/JMS
+
+Batch Worker Nodes (FINERACT_MODE_BATCH_MANAGER_ENABLED=false)
+  └── Consume partition messages
+  └── Execute COB steps for their loan partition
+```
+
+This split is configured via `fineract.remote-job-message-handler.*` properties — see [Spring Batch Partitioning](/jobs/spring-batch-partitioning) for details.
+
+### All-in-One (Default)
+
+All four flags default to `true`, making a standard single-node deployment that handles all operations.
+
+## Related Pages
+
+- [Spring Batch Partitioning](/jobs/spring-batch-partitioning) — batch-manager/worker node configuration
+- [Loan COB Job](/jobs/loan-cob-job) — the LOAN_COB job controlled by batch-manager mode
+- [Configuration Reference](/deployment/configuration-reference) — all `fineract.mode.*` properties

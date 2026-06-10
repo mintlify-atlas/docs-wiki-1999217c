@@ -1,0 +1,186 @@
+---
+title: "Fineract Kafka & JMS Message Transport Configuration"
+sidebarTitle: "Kafka & JMS"
+description: "Configure Kafka or JMS as the pluggable external event transport in Apache Fineract, including MSK, broker URLs, topic settings, and producer tuning."
+---
+
+Apache Fineract separates the concern of _what to send_ (the Avro-encoded external event) from _how to send it_ through the `ExternalEventProducer` interface. Two production-grade implementations ship with the platform — `KafkaExternalEventProducer` and `JMSMultiExternalEventProducer` — each activated by a single property flag. A spring-events in-process fallback is also available for testing.
+
+## The ExternalEventProducer interface
+
+`ExternalEventProducer` (package `org.apache.fineract.infrastructure.event.external.producer`, module `fineract-core`) defines a single method:
+
+```java
+public interface ExternalEventProducer {
+    void sendEvents(Map<Long, List<byte[]>> partitions)
+        throws AcknowledgementTimeoutException;
+}
+```
+
+The `partitions` map groups Avro-serialised message bytes by `aggregateRootId`. The Kafka producer uses this key directly as the Kafka message key (a `Long`), ensuring that all events for the same loan or savings account land in the same partition in order. The JMS producer uses a consistent-hash function (`HashingService.consistentHash`) to distribute partitions across a configurable number of parallel `MessageProducer` instances.
+
+## Kafka transport
+
+`KafkaExternalEventProducer` (package `org.apache.fineract.infrastructure.event.external.producer.kafka`) is activated when `fineract.events.external.producer.kafka.enabled=true`. It is annotated with `@ConditionalOnProperty(value = "fineract.events.external.producer.kafka.enabled", havingValue = "true")`.
+
+The implementation uses Spring's `KafkaTemplate<Long, byte[]>`. For each partition entry it calls `externalEventsKafkaTemplate.send(topicName, partitionKey, messageBytes)` and collects `CompletableFuture<SendResult<Long, byte[]>>` results. It then waits on `CompletableFuture.allOf(...)` with a configurable timeout before throwing `AcknowledgementTimeoutException`:
+
+```java
+// KafkaExternalEventProducer.sendEvents() — simplified
+for (Map.Entry<Long, List<byte[]>> entry : partitions.entrySet()) {
+    for (byte[] message : entry.getValue()) {
+        sendResults.add(externalEventsKafkaTemplate.send(topicName, entry.getKey(), message));
+    }
+}
+CompletableFuture<Void> allOf = CompletableFuture.allOf(sendResults.toArray(new CompletableFuture[0]));
+allOf.get(kafkaProperties.getTimeoutInSeconds(), TimeUnit.SECONDS);
+```
+
+`ExternalEventKafkaConfiguration` (package `org.apache.fineract.infrastructure.event.external.config`) constructs the `ProducerFactory<Long, byte[]>` using `LongSerializer` for keys and `ByteArraySerializer` for values, merging any extra producer properties supplied via `fineract.events.external.producer.kafka.producer.extra-properties`.
+
+### Kafka configuration properties
+
+All properties map to `FineractProperties.FineractExternalEventsProducerKafkaProperties` and can be overridden with the environment variables shown:
+
+```properties
+# Enable Kafka producer
+fineract.events.external.producer.kafka.enabled=${FINERACT_EXTERNAL_EVENTS_KAFKA_ENABLED:false}
+
+# Broker connection
+fineract.events.external.producer.kafka.bootstrap-servers=${FINERACT_EXTERNAL_EVENTS_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+# Send timeout
+fineract.events.external.producer.kafka.timeout-in-seconds=${FINERACT_EXTERNAL_EVENTS_KAFKA_TIMEOUT_IN_SECONDS:10}
+
+# Topic settings
+fineract.events.external.producer.kafka.topic.name=${FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_NAME:external-events}
+fineract.events.external.producer.kafka.topic.auto-create=${FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_AUTO_CREATE:true}
+fineract.events.external.producer.kafka.topic.partitions=${FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_PARTITIONS:10}
+fineract.events.external.producer.kafka.topic.replicas=${FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_REPLICAS:1}
+
+# Extra producer properties (pipe-separated key=value pairs)
+fineract.events.external.producer.kafka.producer.extra-properties=${FINERACT_EXTERNAL_EVENTS_KAFKA_PRODUCER_EXTRA_PROPERTIES:linger.ms=10|batch.size=16384}
+fineract.events.external.producer.kafka.producer.extra-properties-separator=${FINERACT_EXTERNAL_EVENTS_KAFKA_PRODUCER_EXTRA_PROPERTIES_SEPARATOR:|}
+fineract.events.external.producer.kafka.producer.extra-properties-key-value-separator=${FINERACT_EXTERNAL_EVENTS_KAFKA_PRODUCER_EXTRA_PROPERTIES_KEY_VALUE_SEPARATOR:=}
+
+# Extra admin properties (for topic auto-create)
+fineract.events.external.producer.kafka.admin.extra-properties=${FINERACT_EXTERNAL_EVENTS_KAFKA_ADMIN_EXTRA_PROPERTIES:}
+```
+
+<Note>
+  Topic auto-creation is controlled by `KafkaExternalEventTopicConfig` (class `ExternalEventsKafkaTopicAutoCreateCondition`). Set `fineract.events.external.producer.kafka.topic.auto-create=false` in production if your Kafka cluster uses a managed topic lifecycle.
+</Note>
+
+### MSK (Amazon Managed Streaming for Kafka)
+
+For Amazon MSK or other TLS-enabled Kafka clusters, supply IAM or SASL authentication via the extra-properties mechanism:
+
+```properties
+fineract.events.external.producer.kafka.bootstrap-servers=b-1.mycluster.kafka.eu-west-1.amazonaws.com:9098
+fineract.events.external.producer.kafka.producer.extra-properties=security.protocol=SASL_SSL|sasl.mechanism=AWS_MSK_IAM|sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;|sasl.client.callback.handler.class=software.amazon.msk.auth.iam.IAMClientCallbackHandler
+```
+
+## JMS transport
+
+`JMSMultiExternalEventProducer` (package `org.apache.fineract.infrastructure.event.external.producer.jms`) is activated when `fineract.events.external.producer.jms.enabled=true`. It is annotated with `@ConditionalOnProperty(value = "fineract.events.external.producer.jms.enabled", havingValue = "true")`.
+
+The implementation creates a pool of `MessageProducer` instances at send time, distributes partition buckets across them, and submits each bucket as an async task to the `externalEventTaskExecutor` thread pool. Each message is sent as a `BytesMessage` created by `MessageFactory.createByteMessage(byte[])`:
+
+```java
+// JMSMultiExternalEventProducer — simplified inner logic
+Connection connection = connectionFactory.createConnection();
+for (int i = 0; i < producerCount; i++) {
+    Session session = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+    MessageProducer producer = session.createProducer(destination);
+    // tasks submitted to taskExecutor
+    messageProducer.send(destination, messageFactory.createByteMessage(message));
+}
+```
+
+Sessions obtained from a `CachingConnectionFactory` must be explicitly closed to avoid memory leaks; the implementation closes them in a `finally` block.
+
+### JMS configuration properties
+
+```properties
+# Enable JMS producer
+fineract.events.external.producer.jms.enabled=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_ENABLED:false}
+
+# ActiveMQ broker URL (default: embedded/local)
+fineract.events.external.producer.jms.broker-url=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_URL:tcp://127.0.0.1:61616}
+fineract.events.external.producer.jms.broker-username=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_USERNAME:}
+fineract.events.external.producer.jms.broker-password=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_PASSWORD:}
+
+# Destination (queue or topic — set one)
+fineract.events.external.producer.jms.event-queue-name=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_QUEUE_NAME:}
+fineract.events.external.producer.jms.event-topic-name=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_TOPIC_NAME:}
+
+# Parallel producers and async send
+fineract.events.external.producer.jms.producer-count=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_PRODUCER_COUNT:1}
+fineract.events.external.producer.jms.async-send-enabled=${FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_ASYNC_SEND_ENABLED:false}
+
+# Thread pool for parallel sends
+fineract.events.external.producer.jms.thread-pool-task-executor-core-pool-size=${FINERACT_EVENT_TASK_EXECUTOR_CORE_POOL_SIZE:10}
+fineract.events.external.producer.jms.thread-pool-task-executor-max-pool-size=${FINERACT_EVENT_TASK_EXECUTOR_MAX_POOL_SIZE:100}
+```
+
+## Remote job message handler (JMS/Kafka)
+
+A separate JMS/Kafka channel handles batch job dispatch between the batch-manager node and batch-worker nodes. This is configured independently from the external events channel:
+
+```properties
+# Spring events (default, in-process)
+fineract.remote-job-message-handler.spring-events.enabled=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_SPRING_EVENTS_ENABLED:true}
+
+# JMS job channel
+fineract.remote-job-message-handler.jms.enabled=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_ENABLED:false}
+fineract.remote-job-message-handler.jms.request-queue-name=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_QUEUE_NAME:JMS-request-queue}
+fineract.remote-job-message-handler.jms.broker-url=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_BROKER_URL:tcp://127.0.0.1:61616}
+
+# Kafka job channel
+fineract.remote-job-message-handler.kafka.enabled=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ENABLED:false}
+fineract.remote-job-message-handler.kafka.topic.name=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_TOPIC_NAME:job-topic}
+fineract.remote-job-message-handler.kafka.bootstrap-servers=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+fineract.remote-job-message-handler.kafka.consumer.group-id=${FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_GROUPID:fineract-consumer-group-id}
+```
+
+## Switching transports
+
+<Steps>
+  <Step title="Choose one producer">
+    Only one `ExternalEventProducer` bean should be active at a time. The `@ConditionalOnProperty` annotations guarantee this: enable exactly one of the Kafka or JMS flags.
+  </Step>
+  <Step title="Enable the global event pipeline">
+    Set `fineract.events.external.enabled=true`. Without this the `ExternalEventService` will not persist any events regardless of the producer setting.
+  </Step>
+  <Step title="Configure the transport">
+    Fill in the broker URL or bootstrap server and topic/queue name for the chosen transport.
+  </Step>
+  <Step title="Enable individual event types">
+    Call `PUT /api/v1/externalevents/configuration` to enable the specific event types you want published.
+  </Step>
+</Steps>
+
+## Spring-events fallback
+
+When both `fineract.events.external.producer.kafka.enabled` and `fineract.events.external.producer.jms.enabled` are `false`, the platform falls back to in-process Spring application events. This is suitable for development and integration testing but provides no durability guarantees.
+
+<Warning>
+  Never run only the spring-events transport in production. If the application crashes between writing the `ExternalEvent` row and dispatching the in-process event the message will be lost. Use Kafka or JMS in all production deployments.
+</Warning>
+
+## Thread pool sizing
+
+The external event dispatch thread pool is tuned independently:
+
+```properties
+fineract.events.external.thread-pool-core-pool-size=${FINERACT_EVENT_TASK_EXECUTOR_CORE_POOL_SIZE:2}
+fineract.events.external.thread-pool-max-pool-size=${FINERACT_EVENT_TASK_EXECUTOR_MAX_POOL_SIZE:25}
+fineract.events.external.thread-pool-queue-capacity=${FINERACT_EVENT_TASK_EXECUTOR_QUEUE_CAPACITY:500}
+fineract.events.external.partition-size=${FINERACT_EXTERNAL_EVENTS_PARTITION_SIZE:5000}
+```
+
+`partition-size` controls the maximum number of `ExternalEvent` rows read and dispatched in a single batch cycle.
+
+<Tip>
+  For high-volume deployments, increase `thread-pool-max-pool-size` in proportion to `partition-size`. Monitor the `externalEventDestination` JMS queue depth or Kafka consumer lag as the leading indicator of backpressure.
+</Tip>

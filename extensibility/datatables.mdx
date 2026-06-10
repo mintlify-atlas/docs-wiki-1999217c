@@ -1,0 +1,125 @@
+---
+title: "Datatables: Dynamic Schema Extension in Fineract"
+sidebarTitle: "Datatables"
+description: "Fineract datatables let you add custom columns to any entity at runtime via the DatatablesApiResource. Covers RegisteredDatatable, SQL generation, and entity checks."
+---
+
+Fineract's datatable system allows operators to define custom tables that extend the core entity schema without schema migrations. A datatable is a named SQL table associated with a core entity (loan, client, group, savings account, etc.) and can have arbitrary columns added at runtime. The system is also used to back the built-in SQL reporting engine.
+
+## Key Classes
+
+| Class | Location | Purpose |
+|-------|----------|---------|
+| `DatatablesApiResource` | `infrastructure/dataqueries/api/` | REST API (`/v1/datatables`) |
+| `RegisteredDatatable` | `infrastructure/dataqueries/domain/` | JPA entity for `x_registered_table` |
+| `RegisteredDatatableRepository` | `infrastructure/dataqueries/domain/` | Spring Data repo |
+| `ReadWriteNonCoreDataService` | `infrastructure/dataqueries/service/` | Core read/write service |
+| `EntityDatatableChecks` | `infrastructure/dataqueries/domain/` | Auto-trigger checks on entity events |
+| `EntityDatatableChecksApiResource` | `infrastructure/dataqueries/api/` | Entity check configuration API |
+| `ReportsApiResource` | `infrastructure/dataqueries/api/` | Report execution API (`/v1/runreports`) |
+
+## REST API
+
+### Datatable Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/datatables` | List all registered datatables |
+| `GET` | `/v1/datatables/{datatableName}` | Get datatable schema |
+| `POST` | `/v1/datatables` | Register a new datatable |
+| `PUT` | `/v1/datatables/{datatableName}` | Add/remove columns |
+| `DELETE` | `/v1/datatables/{datatableName}` | Deregister a datatable |
+
+### Datatable Data Operations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/datatables/{datatableName}/{entityId}` | Insert a row |
+| `GET` | `/v1/datatables/{datatableName}/{entityId}` | Read rows for entity |
+| `PUT` | `/v1/datatables/{datatableName}/{entityId}` | Update a row |
+| `DELETE` | `/v1/datatables/{datatableName}/{entityId}` | Delete rows |
+
+## RegisteredDatatable Entity
+
+The `RegisteredDatatable` JPA entity maps to the `x_registered_table` database table:
+
+```java RegisteredDatatable.java (key fields)
+@Entity
+@Table(name = "x_registered_table")
+public class RegisteredDatatable {
+    @Column(name = "registered_table_name")
+    private String registeredTableName;
+
+    @Column(name = "application_table_name")
+    private String applicationTableName;  // e.g. "m_loan", "m_client"
+
+    @Column(name = "display_name")
+    private String displayName;
+
+    @Column(name = "multirow_allowed")
+    private boolean multirowAllowed;  // whether multiple rows per entity are allowed
+}
+```
+
+The `applicationTableName` field links the datatable to a core entity. Valid values include `m_loan`, `m_client`, `m_group`, `m_savings_account`, `m_office`, and others.
+
+## Entity Datatable Checks
+
+`EntityDatatableChecks` (table `m_entity_datatable_check`) allows you to make a datatable required at a specific entity lifecycle event:
+
+```java EntityDatatableChecks.java (key fields)
+@Entity
+@Table(name = "m_entity_datatable_check")
+public class EntityDatatableChecks {
+    @Column(name = "application_table_name")
+    private String entityName;        // e.g. "m_loan"
+
+    @Column(name = "entity_status")
+    private Long status;              // 100=SUBMITTED, 300=ACTIVE, etc.
+
+    @Column(name = "datatableName")
+    private String datatableName;
+
+    @Column(name = "system_defined")
+    private boolean systemDefined;
+}
+```
+
+When an entity transitions to the configured status, the system checks whether the required datatable row exists. This is used to enforce data collection at loan submission or client activation.
+
+## Dynamic SQL Generation
+
+`ReadWriteNonCoreDataService` generates SQL dynamically to read/write datatable rows. Key points:
+
+- Column names are validated against the schema of `x_registered_table`.
+- The `R_` prefix convention is used for report parameter injection to distinguish user-supplied values from SQL structure.
+- JOIN clauses are added automatically to link the datatable row to the entity by `id` (or `loan_id`, `client_id`, etc.).
+- Write operations go through the standard Fineract command pipeline, so they are audited.
+
+<Warning>
+Datatable column names and types are defined at registration time. Schema changes (adding columns) are non-destructive, but removing a column that has data will fail. Always test schema changes in a non-production tenant first.
+</Warning>
+
+## Export Support
+
+The `DatatableExportTargetParameter` enum (`infrastructure/dataqueries/service/export/`) defines the export formats:
+
+| Value | Description |
+|-------|-------------|
+| `CSV` | Comma-separated values |
+| `PDF` | PDF via iText |
+| `S3` | Upload to Amazon S3 |
+| `JSON` | JSON array |
+| `PRETTY_JSON` | Indented JSON |
+
+Export endpoints allow bulk data download from any registered datatable.
+
+## Report Integration
+
+The datatable engine also backs the built-in reports. `Report` (table `stretchy_report`) and `ReportParameter`/`ReportParameterUsage` (tables `stretchy_report_param`, `stretchy_parameter`) define parameterized SQL reports. The `RunreportsApiResource` at `/v1/runreports/{reportName}` executes reports by substituting `${paramName}` placeholders with request parameters.
+
+## Related Pages
+
+- [Data & Reporting](/data/dataqueries) — the dataqueries engine including report execution
+- [Reporting](/data/reporting) — the fineract-report module and @ReportService extension point
+- [Hooks](/extensibility/hooks) — webhook triggers on entity events

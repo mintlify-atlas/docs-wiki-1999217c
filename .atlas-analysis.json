@@ -1,24 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Fineract",
+  "projectType": "api-service",
+  "projectName": "Apache Fineract",
+  "projectDescription": "Apache Fineract is an open-source core banking platform providing a flexible, extensible foundation for loans, savings, accounting, and financial services for microfinance and fintech institutions.",
   "theme": "maple",
-  "colors": {
-    "primary": "#c35696",
-    "light": "#1d5e8b",
-    "dark": "#faf6fa"
-  },
-  "favicon": "https://media.brand.dev/cbc27f91-fd3b-452d-89c7-5e7ded5150f3.jpg",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/apache/fineract"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/apache/fineract"
-    }
-  },
+  "primaryColor": "#c35696",
+  "lightColor": "#1d5e8b",
+  "darkColor": "#faf6fa",
   "navigation": {
     "tabs": [
       {
@@ -133,5 +120,38 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Multi-tenant core banking platform with per-tenant PostgreSQL databases",
+    "Loan lifecycle management: products, origination, disbursement, repayment, delinquency",
+    "Progressive (equal-principal) and cumulative loan schedule engines",
+    "Close-of-Business (COB) Spring Batch partitioned job framework",
+    "Savings accounts, fixed deposits, recurring deposits, and share accounts",
+    "Double-entry accounting with full general ledger and product-to-account mapping",
+    "CQRS command/handler pattern across all write operations",
+    "External event streaming via Kafka, JMS, or Spring Events with Avro serialization",
+    "OAuth2 + Basic Auth + 2FA security stack powered by Spring Security",
+    "Configurable roles-based permission system",
+    "Investor/asset-externalization module for loan portfolio transfers",
+    "Bulk import via Excel, custom datatables (dynamic schema), and reporting engine",
+    "Custom module extension system under `custom/` directory with hot-reload support",
+    "Interoperation API for cross-system financial transfers",
+    "Instance-mode switching (read-only, write-only, batch worker/manager)"
+  ],
+  "publicApiSurface": [
+    "ServerApplication.main() — Spring Boot entry point (fineract-provider/src/main/java/org/apache/fineract/ServerApplication.java)",
+    "FineractWebApplicationConfiguration — root Spring Boot configuration (fineract-provider)",
+    "LoansApiResource — REST API for loan accounts (/api/v1/loans)",
+    "SavingsAccountsApiResource — REST API for savings (/api/v1/savingsaccounts)",
+    "GLAccountsApiResource — General Ledger REST API (/api/v1/glaccounts)",
+    "JournalEntriesApiResource — Journal entries REST API (/api/v1/journalentries)",
+    "ClientsApiResource — Client management REST API (/api/v1/clients)",
+    "GroupsApiResource — Group lending REST API (/api/v1/groups)",
+    "SchedulerJobApiResource — Job management REST API (/api/v1/jobs)",
+    "BusinessStepConfigApiResource — COB business step configuration (/api/v1/businessstep)",
+    "ExternalEventConfigurationApiResource — External event control (/api/v1/externalevents/configuration)",
+    "CommandDispatcher — core command dispatch interface (fineract-command module)",
+    "AbstractItemProcessor — COB item processor base class (fineract-cob module)",
+    "FineractProperties — typed configuration properties (application.properties)"
+  ]
 }

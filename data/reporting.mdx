@@ -1,0 +1,317 @@
+---
+title: "Reporting Module: Architecture and Extension Guide"
+sidebarTitle: "Reporting"
+description: "Fineract's fineract-report module: the @ReportService annotation, ReportingProcessServiceProvider registry, built-in SQL and Pentaho providers, and how to add custom report types."
+---
+
+The `fineract-report` Gradle subproject provides the pluggable reporting infrastructure that decouples report *execution* from report *definition*. It exposes three core artefacts — the `@ReportService` annotation, the `ReportingProcessService` interface, and the `ReportingProcessServiceProvider` registry — that make it straightforward to add entirely new report backends (Jasper, Excel, custom PDF, etc.) without touching any core Fineract code.
+
+## Module Structure
+
+```
+fineract-report/src/main/java/org/apache/fineract/infrastructure/report/
+├── annotation/
+│   └── ReportService.java               # marker annotation for report providers
+├── provider/
+│   └── ReportingProcessServiceProvider.java  # Spring bean registry
+└── service/
+    ├── ReportingProcessService.java      # provider interface
+    └── AbstractReportingProcessService.java  # base with parameter parsing
+```
+
+## The `@ReportService` Annotation
+
+Every concrete report provider is identified by the `@ReportService` annotation, which declares the report type string(s) it handles:
+
+```java
+// annotation/ReportService.java
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.TYPE)
+@Documented
+public @interface ReportService {
+    /**
+     * @return the type of the report (e.g. "Table", "Chart", "Pentaho")
+     */
+    String[] type();
+}
+```
+
+Type strings correspond exactly to the `report_type` column value in the `stretchy_report` database table.
+
+## The `ReportingProcessService` Interface
+
+All report providers implement this interface:
+
+```java
+// service/ReportingProcessService.java
+public interface ReportingProcessService {
+
+    /**
+     * Execute the named report and return a JAX-RS Response.
+     */
+    Response processRequest(String reportName,
+                            MultivaluedMap<String, String> queryParams);
+
+    /**
+     * Return the list of export formats this provider supports
+     * (e.g. JSON, CSV, PDF).
+     */
+    List<ReportExportType> getAvailableExportTargets();
+
+    /**
+     * Extract and validate R_* parameters from the query string,
+     * returning them as ${paramName} → value pairs.
+     */
+    Map<String, String> getReportParams(MultivaluedMap<String, String> queryParams);
+}
+```
+
+The abstract base class `AbstractReportingProcessService` implements `getReportParams()` by scanning for `R_`-prefixed query parameters, stripping the prefix, and wrapping them in `${...}` for SQL substitution. All values are validated by `SqlValidator` before substitution:
+
+```java
+// service/AbstractReportingProcessService.java
+@Override
+public Map<String, String> getReportParams(final MultivaluedMap<String, String> queryParams) {
+    final Map<String, String> reportParams = new HashMap<>();
+    for (Map.Entry<String, List<String>> entry : queryParams.entrySet()) {
+        if (entry.getKey().startsWith("R_")) {
+            String pKey = "${" + entry.getKey().substring(2) + "}";
+            String pValue = entry.getValue().get(0);
+            sqlValidator.validate(pValue);
+            reportParams.put(pKey, pValue);
+        }
+    }
+    return reportParams;
+}
+```
+
+## The `ReportingProcessServiceProvider` Registry
+
+`ReportingProcessServiceProvider` is a singleton Spring bean that scans the application context at startup, collects every `ReportingProcessService` bean that carries `@ReportService`, and builds an immutable `Map<String, ReportingProcessService>`:
+
+```java
+// provider/ReportingProcessServiceProvider.java
+@Component
+@Scope("singleton")
+public class ReportingProcessServiceProvider {
+
+    public static final String SERVICE_MISSING =
+        "There is no ReportingProcessService registered in the " +
+        "ReportingProcessServiceProvider for this report type: ";
+
+    private final Map<String, ReportingProcessService> reportingProcessServices;
+
+    @Autowired
+    public ReportingProcessServiceProvider(
+            List<ReportingProcessService> reportingProcessServices) {
+        var mapBuilder = ImmutableMap.<String, ReportingProcessService>builder();
+        for (ReportingProcessService s : reportingProcessServices) {
+            String[] reportTypes = s.getClass()
+                                    .getAnnotation(ReportService.class)
+                                    .type();
+            for (String type : reportTypes) {
+                mapBuilder.put(type, s);
+            }
+            LOGGER.info("Registered report service '{}' for type/s '{}'",
+                        s, reportTypes);
+        }
+        this.reportingProcessServices = mapBuilder.build();
+    }
+
+    public ReportingProcessService findReportingProcessService(
+            final String reportType) {
+        return reportingProcessServices.getOrDefault(reportType, null);
+    }
+
+    public Collection<String> findAllReportingTypes() {
+        return this.reportingProcessServices.keySet();
+    }
+}
+```
+
+```mermaid
+flowchart LR
+    startup([Spring Context\nStartup])
+    prov[ReportingProcessServiceProvider]
+    dt["DatatableReportingProcessService\n@ReportService(type={Table,Chart,SMS})"]
+    pent["PentahoReportingProcessServiceImpl\n@ReportService(type={Pentaho})\n(optional / custom module)"]
+    rr[RunreportsApiResource]
+    ra[ReportsApiResource]
+
+    startup -->|autowires List<ReportingProcessService>| prov
+    dt --> prov
+    pent -.->|optional| prov
+    rr -->|findReportingProcessService(reportType)| prov
+    ra -->|findAllReportingTypes()| prov
+```
+
+## Built-in Report Types
+
+### SQL Reports (`Table`, `Chart`, `SMS`)
+
+`DatatableReportingProcessService` (in `fineract-provider`) handles the three built-in SQL-backed report types. It is registered for `type = { "Table", "Chart", "SMS" }`:
+
+```java
+@Service
+@ReportService(type = { "Table", "Chart", "SMS" })
+public class DatatableReportingProcessService extends AbstractReportingProcessService {
+    // resolves export mode, delegates to a DatatableReportExportService
+}
+```
+
+The execution flow for a SQL report:
+
+<Steps>
+  <Step title="Client calls RunreportsApiResource">
+    `GET /api/v1/runreports/{reportName}?R_officeId=1&exportCSV=true`
+  </Step>
+  <Step title="Resolve report type">
+    `ReadReportingService.getReportType(reportName, parameterType)` queries `stretchy_report` to get the `report_type` value.
+  </Step>
+  <Step title="Look up the provider">
+    `ReportingProcessServiceProvider.findReportingProcessService("Table")` returns `DatatableReportingProcessService`.
+  </Step>
+  <Step title="Parse parameters">
+    `AbstractReportingProcessService.getReportParams()` converts `R_officeId=1` → `${officeId}=1`.
+  </Step>
+  <Step title="Execute SQL">
+    `ReadReportingServiceImpl.retrieveGenericResultset()` fetches `report_sql` from the database, substitutes `${officeId}` → `1`, and executes via `JdbcTemplate`.
+  </Step>
+  <Step title="Export">
+    `DatatableExportTargetParameter.resolverExportTarget()` detects `exportCSV=true` and routes to `CsvDatatableReportExportServiceImpl`, which streams a CSV response.
+  </Step>
+</Steps>
+
+### Pentaho Reports
+
+Pentaho reports use `report_type = 'Pentaho'` in `stretchy_report`. The actual `PentahoReportingProcessServiceImpl` is **not** included in the open-source build; it must be provided by a custom module. When present, it is auto-detected and registered at startup because it implements `ReportingProcessService` and is annotated with `@ReportService(type = { "Pentaho" })`.
+
+<Note>
+Pentaho `.prpt` report files were historically stored on the filesystem. Migration `0018_pentaho_reports_to_table.xml` moved them into the `stretchy_report` table so that report binaries are managed via the standard API.
+</Note>
+
+## The `ReportsApiResource` Endpoint
+
+`ReportsApiResource` (at `/api/v1/reports`) manages the catalogue of report definitions stored in `stretchy_report`. It provides the available report types by calling `ReportingProcessServiceProvider.findAllReportingTypes()`:
+
+```java
+@Path("/v1/reports")
+@Tag(name = "Reports", description = "Non-core reports can be added, updated and deleted.")
+public class ReportsApiResource {
+
+    private static final Set<String> RESPONSE_DATA_PARAMETERS =
+        new HashSet<>(Arrays.asList(
+            "id", "reportName", "reportType", "reportSubType",
+            "reportCategory", "description", "reportSql",
+            "coreReport", "useReport", "reportParameters"));
+    // GET, POST, PUT, DELETE operations ...
+}
+```
+
+<Tabs>
+  <Tab title="List Reports">
+    ```http
+    GET /api/v1/reports
+    Fineract-Platform-TenantId: default
+    Authorization: Basic <credentials>
+    ```
+  </Tab>
+  <Tab title="Create Report">
+    ```http
+    POST /api/v1/reports
+    Content-Type: application/json
+
+    {
+      "reportName": "My Custom Report",
+      "reportType": "Table",
+      "reportCategory": "Loan",
+      "description": "Lists loans by office",
+      "reportSql": "SELECT l.id, l.account_no FROM m_loan l WHERE l.office_id = ${officeId}",
+      "useReport": true,
+      "reportParameters": [
+        { "parameterId": 1, "parameterName": "officeId" }
+      ]
+    }
+    ```
+  </Tab>
+  <Tab title="Run Report">
+    ```http
+    GET /api/v1/runreports/My+Custom+Report?R_officeId=1
+    Fineract-Platform-TenantId: default
+    ```
+  </Tab>
+</Tabs>
+
+## Report Parameters
+
+Parameters are shared across reports via the `stretchy_parameter` table. The `ReportParameter` entity maps to `stretchy_report_parameter` and links a report to its allowed parameters. Each parameter can carry a special SQL that generates a dropdown list of valid values:
+
+| Field | Description |
+|---|---|
+| `parameter_name` | Display label (e.g. `selectOffice`) |
+| `parameter_variable` | Variable used in report SQL (e.g. `officeId`) |
+| `parameter_label` | UI label |
+| `parameter_displayType` | `select`, `date`, `number`, `string` |
+| `parameter_ForRun` | Whether shown on the run-report form |
+| `special_parameterName` | Optional lookup SQL for populating a select box |
+
+## Report Mailing Jobs
+
+The `ReportMailingJobApiResource` (path prefix from `ReportMailingJobConstants.REPORT_MAILING_JOB_RESOURCE_NAME`, resolving to `/api/v1/reportmailingjobs`) enables scheduled email delivery of report output:
+
+```java
+@Path("/v1/" + ReportMailingJobConstants.REPORT_MAILING_JOB_RESOURCE_NAME)
+@Tag(name = "Report Mailing Jobs",
+     description = "Schedule a report to run and be sent by email on a recurring basis.")
+public class ReportMailingJobApiResource { ... }
+```
+
+The `ExecuteReportMailingJobsTasklet` Spring Batch tasklet runs the scheduled jobs. Run history is available via `ReportMailingJobRunHistoryApiResource`.
+
+## Adding a Custom Report Type
+
+<Steps>
+  <Step title="Create a Spring service">
+    Implement `ReportingProcessService` (or extend `AbstractReportingProcessService`) and annotate with `@ReportService`:
+    ```java
+    @Service
+    @ReportService(type = { "MyCustomType" })
+    public class MyCustomReportingProcessService
+            extends AbstractReportingProcessService {
+
+        public MyCustomReportingProcessService(SqlValidator sqlValidator) {
+            super(sqlValidator);
+        }
+
+        @Override
+        public Response processRequest(String reportName,
+                MultivaluedMap<String, String> queryParams) {
+            Map<String, String> params = getReportParams(queryParams);
+            // generate output...
+            return Response.ok(output).type("application/pdf").build();
+        }
+
+        @Override
+        public List<ReportExportType> getAvailableExportTargets() {
+            return List.of(ReportExportType.PDF);
+        }
+    }
+    ```
+  </Step>
+  <Step title="Place in a Gradle subproject">
+    The bean must be on the Spring classpath. Put it in a custom Gradle module under `custom/<company>/<category>/<module>/` and include it in `settings.gradle`.
+  </Step>
+  <Step title="Register a report definition">
+    Insert a row into `stretchy_report` with `report_type = 'MyCustomType'` via the `/api/v1/reports` POST endpoint or a Liquibase changeset.
+  </Step>
+  <Step title="Verify at startup">
+    Look for the log line:
+    ```
+    Registered report service '...' for type/s '[MyCustomType]'
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+The `ReportingProcessServiceProvider` uses an `ImmutableMap`. If two providers register the same type string, the second `put()` call will throw a `IllegalArgumentException` at startup. Ensure your custom type string does not collide with `Table`, `Chart`, `SMS`, or `Pentaho`.
+</Warning>

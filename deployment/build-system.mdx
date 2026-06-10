@@ -1,0 +1,353 @@
+---
+title: "Fineract Gradle Multi-Project Build System"
+sidebarTitle: "Build System"
+description: "Complete guide to Fineract's Gradle build: subproject structure, key tasks (bootRun, devRun, bootJar, createPGDB), code quality plugins, and integration test execution."
+---
+
+Apache Fineract uses a **Gradle multi-project build** rooted at `build.gradle` and `settings.gradle`. The build is structured as a collection of named subprojects — each owning a discrete domain (accounting, loans, savings, reporting, etc.) — wired together through Gradle's dependency resolution. All shared build conventions live in `buildSrc/`.
+
+## Repository Layout
+
+```
+fineract/
+├── build.gradle                   # root build: plugins, shared config, quality tools
+├── settings.gradle                # subproject declarations + Develocity / build cache
+├── gradle.properties              # JVM args, parallel build, caching flags
+├── buildSrc/
+│   └── src/main/groovy/
+│       ├── org.apache.fineract.dependencies.gradle
+│       └── org.apache.fineract.release.gradle
+├── fineract-core/                 # shared domain primitives
+├── fineract-security/             # authentication & authorisation
+├── fineract-provider/             # main Spring Boot application (bootJar entry point)
+├── fineract-loan/                 # loan domain module
+├── fineract-savings/              # savings domain module
+├── fineract-accounting/           # GL and journal entries
+├── fineract-report/               # pluggable reporting infrastructure
+├── fineract-cob/                  # Close-of-Business batch framework
+├── fineract-war/                  # WAR packaging for Tomcat deployment
+├── fineract-client/               # generated OpenAPI client library
+├── integration-tests/             # end-to-end integration test suite
+├── twofactor-tests/               # 2FA integration tests
+├── oauth2-tests/                  # OAuth2 integration tests
+└── custom/
+    └── docker/                    # custom Docker image with all custom modules
+```
+
+## Subproject Declarations
+
+`settings.gradle` declares every included subproject. The complete list at the time of writing:
+
+```groovy
+// settings.gradle (selected)
+rootProject.name = 'fineract'
+include ':fineract-core'
+include ':fineract-security'
+include ':fineract-cob'
+include ':fineract-validation'
+include ':fineract-command'
+include ':fineract-command-jdbc'
+include ':fineract-command-audit'
+include ':fineract-accounting'
+include ':fineract-provider'
+include ':fineract-branch'
+include ':fineract-document'
+include ':fineract-investor'
+include ':fineract-loan'
+include ':fineract-savings'
+include ':fineract-report'
+include ':fineract-mix'
+include ':fineract-war'
+include ':integration-tests'
+include ':fineract-client'
+include ':fineract-avro-schemas'
+include ':fineract-progressive-loan'
+include ':fineract-working-capital-loan'
+// ... and custom modules loaded dynamically from custom/<company>/<category>/<module>/
+```
+
+## Project Lists in `build.gradle`
+
+The root `build.gradle` maintains two curated project lists:
+
+### `fineractJavaProjects`
+
+Projects that receive the full Java/quality toolchain (Checkstyle, Spotless, SpotBugs, Jacoco):
+
+```groovy
+fineractJavaProjects = subprojects.findAll {
+    [
+        'fineract-core', 'fineract-security', 'fineract-cob',
+        'fineract-validation', 'fineract-command', 'fineract-command-jdbc',
+        'fineract-command-audit', 'fineract-accounting', 'fineract-provider',
+        'fineract-branch', 'fineract-document', 'fineract-investor',
+        'fineract-charge', 'fineract-rates', 'fineract-tax',
+        'fineract-loan-origination', 'fineract-loan', 'fineract-savings',
+        'fineract-report', 'fineract-mix',
+        'integration-tests', 'twofactor-tests', 'oauth2-tests',
+        'fineract-client', 'fineract-client-feign', 'fineract-avro-schemas',
+        'fineract-e2e-tests-core', 'fineract-e2e-tests-runner',
+        'fineract-progressive-loan',
+        'fineract-progressive-loan-embeddable-schedule-generator',
+        'fineract-working-capital-loan'
+    ].contains(it.name)
+}
+```
+
+### `fineractPublishProjects`
+
+Projects published to Maven Central (the public artifact set):
+
+```groovy
+fineractPublishProjects = subprojects.findAll {
+    [
+        'fineract-avro-schemas', 'fineract-client', 'fineract-client-feign',
+        'fineract-core', 'fineract-security', 'fineract-cob',
+        'fineract-validation', 'fineract-command', 'fineract-command-jdbc',
+        'fineract-command-audit', 'fineract-accounting', 'fineract-provider',
+        'fineract-investor', 'fineract-charge', 'fineract-rates', 'fineract-tax',
+        'fineract-loan-origination', 'fineract-loan', 'fineract-savings',
+        'fineract-report', 'fineract-mix', 'fineract-branch', 'fineract-document',
+        'fineract-progressive-loan',
+        'fineract-progressive-loan-embeddable-schedule-generator',
+        'fineract-working-capital-loan'
+    ].contains(it.name)
+}
+```
+
+## Key Gradle Tasks
+
+<CardGroup cols={2}>
+  <Card title="bootRun" icon="play">
+    Starts the embedded Tomcat server from `fineract-provider`. Runs all quality checks first.
+  </Card>
+  <Card title="devRun" icon="code">
+    Same as `bootRun` but skips Checkstyle, Spotless, SpotBugs, Javadoc, and Modernizer for fast inner-loop development.
+  </Card>
+  <Card title="bootJar" icon="box">
+    Produces a self-contained executable JAR in `fineract-provider/build/libs/`.
+  </Card>
+  <Card title="createPGDB" icon="database">
+    Creates a local PostgreSQL database. Pass `-PdbName=fineract_tenants` and optionally `-PpgUser` / `-PpgPassword`.
+  </Card>
+</CardGroup>
+
+### Running the Application
+
+```bash
+# Standard run (with quality checks)
+./gradlew clean bootRun
+
+# Development run (skips quality checks)
+./gradlew :fineract-provider:devRun
+
+# Build executable JAR only
+./gradlew :fineract-provider:bootJar
+```
+
+The `devRun` task is defined in `fineract-provider/build.gradle`:
+
+```groovy
+tasks.register('devRun', org.springframework.boot.gradle.tasks.run.BootRun) {
+    description = 'Runs the application quickly for development by skipping quality checks'
+    group = 'Application'
+
+    gradle.taskGraph.whenReady { graph ->
+        if (graph.hasTask(devRun)) {
+            tasks.matching { task ->
+                task.name in ['checkstyle', 'checkstyleMain', 'checkstyleTest',
+                              'spotlessCheck', 'spotlessApply',
+                              'spotbugsMain', 'spotbugsTest',
+                              'javadoc', 'javadocJar', 'modernizer',
+                              'testClasses']
+            }.configureEach { enabled = false }
+        }
+    }
+    // inherits all bootRun settings
+    classpath = bootRun.classpath
+    mainClass = bootRun.mainClass
+    jvmArgs  = bootRun.jvmArgs
+}
+```
+
+### Database Setup Tasks
+
+All database tasks are in `fineract-provider/build.gradle`:
+
+```groovy
+// Create PostgreSQL database
+tasks.register('createPGDB') {
+    description = "Creates the PostgreSQL Database. Needs -PdbName=someDBname"
+    doLast {
+        def sql = Sql.newInstance(
+            'jdbc:postgresql://localhost:5432/', pgUser, pgPassword,
+            'org.postgresql.Driver')
+        sql.execute('create database ' + "$dbName")
+    }
+}
+
+// Drop PostgreSQL database
+tasks.register('dropPGDB') { ... }
+
+// MySQL variants also available: createMySQLDB, dropMySQLDB
+```
+
+**Example:**
+```bash
+./gradlew :fineract-provider:createPGDB -PdbName=fineract_tenants \
+    -PpgUser=postgres -PpgPassword=postgres
+```
+
+## Code Quality Plugins
+
+All `fineractJavaProjects` receive the following quality plugins:
+
+<Accordion title="Checkstyle">
+```groovy
+apply plugin: 'checkstyle'
+dependencies {
+    checkstyle 'com.puppycrawl.tools:checkstyle:13.4.2'
+    checkstyle 'com.github.sevntu-checkstyle:sevntu-checks:1.44.1'
+}
+```
+Configuration is in `config/checkstyle/`. Run with:
+```bash
+./gradlew checkstyleMain checkstyleTest
+```
+</Accordion>
+
+<Accordion title="Spotless (code formatting)">
+```groovy
+apply plugin: 'com.diffplug.spotless'
+spotless {
+    java {
+        // Google Java Format + import ordering
+        targetExclude '**/build/**', '/**/build.gradle'
+    }
+}
+```
+Fix formatting automatically:
+```bash
+./gradlew spotlessApply
+```
+Check only:
+```bash
+./gradlew spotlessCheck
+```
+</Accordion>
+
+<Accordion title="SpotBugs">
+```groovy
+apply plugin: 'com.github.spotbugs'
+spotbugs {
+    excludeFilter = file("$rootDir/config/spotbugs/exclude.xml")
+}
+spotbugsPlugins 'jp.skypencil.findbugs.slf4j:bug-pattern:1.5.0@jar'
+```
+Run:
+```bash
+./gradlew spotbugsMain
+```
+</Accordion>
+
+<Accordion title="JaCoCo (code coverage)">
+```groovy
+apply plugin: 'jacoco'
+jacoco {
+    toolVersion = jacocoVersion  // '0.8.14'
+    reportsDirectory = file("$buildDir/reports/jacoco")
+}
+```
+Generate coverage report after tests:
+```bash
+./gradlew test jacocoTestReport
+```
+</Accordion>
+
+## Integration Tests
+
+Integration tests live in the `:integration-tests` subproject and require a running Fineract instance (or a Docker Compose stack). They use the `fineract-client` library to call the REST API:
+
+```bash
+# Run integration tests (requires running server)
+./gradlew :integration-tests:test
+
+# Run with a specific test filter
+./gradlew :integration-tests:test --tests "*LoanIntegrationTest*"
+```
+
+Additional test suites:
+- `:twofactor-tests` — tests for 2FA-protected endpoints
+- `:oauth2-tests` — tests for OAuth2 flows
+- `:fineract-e2e-tests-runner` — Cucumber-based end-to-end tests
+
+## WAR Packaging (`fineract-war`)
+
+The `:fineract-war` subproject produces a traditional Java EE WAR file for deployment on an external Tomcat server (as opposed to the embedded Tomcat in `bootJar`):
+
+```bash
+./gradlew :fineract-war:war
+```
+
+The resulting WAR is deployed to a Tomcat instance configured with `docker/server.xml`.
+
+## `gradle.properties` Configuration
+
+```properties
+# Build JVM heap — 12 GB needed for parallel compilation with Avro codegen
+org.gradle.jvmargs=-Xmx12g \
+    --add-exports jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED \
+    --add-exports jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED \
+    ...
+
+# Gradle remote build cache (Apache Develocity)
+org.gradle.caching=true
+
+# Parallel project execution
+org.gradle.parallel=true
+
+# Daemon idle timeout (3 hours — useful for CI)
+org.gradle.daemon.idletimeout=10800000
+```
+
+## `buildSrc/` Convention Plugins
+
+`buildSrc/src/main/groovy/` houses two Groovy convention scripts applied via `apply from:` in the root `build.gradle`:
+
+| File | Purpose |
+|---|---|
+| `org.apache.fineract.dependencies.gradle` | Centralises dependency version declarations |
+| `org.apache.fineract.release.gradle` | Release publishing logic (signing, Nexus upload) |
+
+## Version Management
+
+The project version is computed dynamically from git tags by the `me.qoomon.git-versioning` plugin:
+
+```groovy
+gitVersioning.apply {
+    refs {
+        branch("release\\/\\d+\\.\\d+\\.\\d+") {
+            version = '${describe.tag.version.major}.${describe.tag.version.minor}.${describe.tag.version.patch}'
+        }
+        tag("(\\d+\\.\\d+\\.\\d+)") {
+            version = '${describe.tag.version.major}.${describe.tag.version.minor}.${describe.tag.version.patch}'
+        }
+    }
+    rev {
+        version = '${describe.tag.version.major}.${describe.tag.version.minor.next}.0-SNAPSHOT'
+    }
+}
+```
+
+Tagged releases produce a clean `X.Y.Z` version. Development builds on untagged commits produce `X.(Y+1).0-SNAPSHOT`.
+
+## Spring Boot Plugin Version
+
+```groovy
+// build.gradle
+id 'org.springframework.boot' version '3.5.14' apply false
+```
+
+<Note>
+The Spring Boot plugin is applied to `:fineract-provider` only. All other subprojects that need Spring Boot dependency management use `apply plugin: 'io.spring.dependency-management'` independently.
+</Note>

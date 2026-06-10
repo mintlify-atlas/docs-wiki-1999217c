@@ -1,0 +1,297 @@
+---
+title: "Two-Factor Authentication in Apache Fineract"
+sidebarTitle: "Two-Factor Auth"
+description: "Enable and configure Fineract's 2FA layer: OTP generation via RandomOTPGenerator, TFAccessToken lifecycle, delivery methods, and the /api/v1/twofactor endpoints."
+---
+
+Apache Fineract's two-factor authentication (2FA) feature adds a second verification step on top of HTTP Basic Auth, requiring users to prove possession of a registered delivery channel (email or SMS) in addition to their password. The feature is implemented entirely within the `fineract-security` module and is fully optional — it activates only when `fineract.security.2fa.enabled=true`. When active, every protected API endpoint requires the `Fineract-Platform-TFA-Token` request header in addition to the standard `Authorization: Basic …` header, except for endpoints that only require fully-authenticated access (such as `POST /api/v1/twofactor` itself).
+
+## Enabling 2FA
+
+Set the property in `application.properties` or via the environment variable:
+
+```properties
+# fineract-provider/src/main/resources/application.properties
+fineract.security.2fa.enabled=${FINERACT_SECURITY_2FA_ENABLED:false}
+```
+
+```bash
+export FINERACT_SECURITY_2FA_ENABLED=true
+```
+
+<Note>
+  2FA is only supported in Basic Auth mode (`fineract.security.basicauth.enabled=true`). When OAuth2 mode is active, the `TwoFactorApiResource` bean is still conditionally registered, but the filter integration is specific to the Basic Auth `SecurityConfig` and `AuthorizationServerConfig` classes.
+</Note>
+
+When enabled, two things happen at startup:
+
+1. `SecurityConfig.filterChain()` adds `TwoFactorAuthenticationFilter` to the filter chain after `CorrelationHeaderFilter`.
+2. `SecurityConfig.filterChain()` adds `hasAuthority("TWOFACTOR_AUTHENTICATED")` as a required authority for all `/api/**` requests (except the 2FA endpoints themselves, which only require `fullyAuthenticated()`).
+
+## The 2FA Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as Fineract API
+    participant TFS as TwoFactorService
+    participant OTP as RandomOTPGenerator
+    participant Email as Email / SMS
+
+    Note over C,API: Step 1 — Basic Auth Login
+    C->>API: POST /api/v1/authentication\nAuthorization: Basic <b64>\nFineract-Platform-TenantId: default
+    API-->>C: 200 OK\n{isTwoFactorAuthenticationRequired: true,\nbase64EncodedAuthenticationKey: "..."}
+
+    Note over C,API: Step 2 — Request OTP
+    C->>API: POST /api/v1/twofactor?deliveryMethod=email\nAuthorization: Basic <b64>
+    API->>TFS: createNewOTPToken(user, "email", false)
+    TFS->>OTP: generate() — alphanumeric token
+    OTP-->>TFS: "A3F9K2"
+    TFS->>Email: Send OTP to user's email address
+    API-->>C: 200 OK — OTPMetadata
+
+    Note over C,API: Step 3 — Validate OTP → receive TFA access token
+    C->>API: POST /api/v1/twofactor/validate?token=A3F9K2\nAuthorization: Basic <b64>
+    API->>TFS: createAccessTokenFromOTP(user, "A3F9K2")
+    TFS-->>API: TFAccessToken {token, validFrom, validTo}
+    API-->>C: 200 OK — {token: "<UUID-like string>", validFrom, validTo}
+
+    Note over C,API: Step 4 — Call protected endpoints
+    C->>API: GET /api/v1/loans?tenantIdentifier=default\nAuthorization: Basic <b64>\nFineract-Platform-TFA-Token: <TFA token>
+    API->>TFS: fetchAccessTokenForUser(user, token)
+    TFS-->>API: TFAccessToken (valid=true)
+    API-->>C: 200 OK — loan data
+```
+
+## Key Classes
+
+### `TwoFactorAuthenticationFilter`
+
+**Package:** `org.apache.fineract.infrastructure.security.filter`  
+**File:** `fineract-security/src/main/java/org/apache/fineract/infrastructure/security/filter/TwoFactorAuthenticationFilter.java`
+
+This `GenericFilterBean` runs after the primary authentication filter. Its logic:
+
+1. If the `SecurityContext` contains an authenticated `AppUser`, proceed.
+2. If the user has the `BYPASS_TWOFACTOR` permission (`TwoFactorConstants.BYPASS_TWO_FACTOR_PERMISSION`), skip OTP validation and immediately grant the `TWOFACTOR_AUTHENTICATED` authority.
+3. Otherwise, read the `Fineract-Platform-TFA-Token` header. If present, call `TwoFactorService.fetchAccessTokenForUser()`. If the returned `TFAccessToken` is `null` or `!isValid()`, return HTTP 401.
+4. If the token is valid, add `TWOFACTOR_AUTHENTICATED` as a `SimpleGrantedAuthority` and update the `SecurityContext` with a new `UsernamePasswordAuthenticationToken` or `FineractJwtAuthenticationToken`.
+
+```java
+// TwoFactorAuthenticationFilter.doFilter() — simplified
+if (!user.hasSpecificPermissionTo(TwoFactorConstants.BYPASS_TWO_FACTOR_PERMISSION)) {
+    String token = request.getHeader("Fineract-Platform-TFA-Token");
+    if (token != null) {
+        TFAccessToken accessToken = twoFactorService.fetchAccessTokenForUser(user, token);
+        if (accessToken == null || !accessToken.isValid()) {
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
+                "Invalid two-factor access token provided");
+            return;
+        }
+    }
+}
+List<GrantedAuthority> updatedAuthorities = new ArrayList<>(authentication.getAuthorities());
+updatedAuthorities.add(new SimpleGrantedAuthority("TWOFACTOR_AUTHENTICATED"));
+context.setAuthentication(createUpdatedAuthentication(authentication, updatedAuthorities));
+```
+
+### `TwoFactorService`
+
+**Package:** `org.apache.fineract.infrastructure.security.service`  
+**File:** `fineract-security/src/main/java/org/apache/fineract/infrastructure/security/service/TwoFactorService.java`
+
+The service interface defines the complete 2FA contract:
+
+```java
+public interface TwoFactorService {
+    List<OTPDeliveryMethod> getDeliveryMethodsForUser(AppUser user);
+    OTPRequest createNewOTPToken(AppUser user, String deliveryMethodName,
+                                  boolean extendedAccessToken);
+    TFAccessToken createAccessTokenFromOTP(AppUser user, String otpToken);
+    void validateTwoFactorAccessToken(AppUser user, String token);
+    TFAccessToken fetchAccessTokenForUser(AppUser user, String token);
+    TFAccessToken invalidateAccessToken(AppUser user, JsonCommand command);
+}
+```
+
+### `RandomOTPGenerator`
+
+**Package:** `org.apache.fineract.infrastructure.security.service`  
+**File:** `fineract-security/src/main/java/org/apache/fineract/infrastructure/security/service/RandomOTPGenerator.java`
+
+OTP tokens are generated using a `SecureRandom`-backed generator that samples from the character set `0123456789ABCDEFGHIJKLMNOPQRSTUVQXYZ`. The token length is configurable via the `otp-token-length` configuration key (see [Configuration](#configuration-keys)):
+
+```java
+private static final String allowedCharacters = "0123456789ABCDEFGHIJKLMNOPQRSTUVQXYZ";
+private final int tokenLength;
+private final SecureRandom secureRandom = new SecureRandom();
+
+public String generate() {
+    StringBuilder builder = new StringBuilder();
+    for (int i = 0; i < tokenLength; i++) {
+        builder.append(allowedCharacters.charAt(
+            (int) (secureRandom.nextDouble() * allowedCharacters.length())));
+    }
+    return builder.toString();
+}
+```
+
+### `TFAccessToken`
+
+**Package:** `org.apache.fineract.infrastructure.security.domain`  
+**File:** `fineract-security/src/main/java/org/apache/fineract/infrastructure/security/domain/TFAccessToken.java`  
+**Table:** `twofactor_access_token`
+
+The `TFAccessToken` entity stores the issued access token with time-bounded validity:
+
+```java
+@Entity
+@Table(name = "twofactor_access_token",
+    uniqueConstraints = @UniqueConstraint(columnNames = {"token", "appuser_id"}))
+public class TFAccessToken extends AbstractPersistableCustom<Long> {
+    @Column(name = "token", nullable = false, length = 32)
+    private String token;
+
+    @ManyToOne
+    @JoinColumn(name = "appuser_id", nullable = false)
+    private AppUser user;
+
+    @Column(name = "valid_from", nullable = false)
+    private LocalDateTime validFrom;
+
+    @Column(name = "valid_to", nullable = false)
+    private LocalDateTime validTo;
+
+    @Column(name = "enabled", nullable = false)
+    private boolean enabled;
+
+    public boolean isValid() {
+        return this.enabled
+            && !DateUtils.isAfterTenantDateTime(getValidFrom())
+            && DateUtils.isAfterTenantDateTime(getValidTo());
+    }
+}
+```
+
+## API Endpoints
+
+All 2FA endpoints are implemented in `TwoFactorApiResource` (`org.apache.fineract.infrastructure.security.api`) under the path `/v1/twofactor`. The class is conditionally registered via `@ConditionalOnProperty("fineract.security.2fa.enabled")`.
+
+<Accordion title="GET /api/v1/twofactor — List delivery methods">
+  Returns the available OTP delivery methods for the currently authenticated user.
+
+  **Required headers:** `Authorization: Basic <b64>`, `Fineract-Platform-TenantId: <tenant>`  
+  **Does NOT require** `Fineract-Platform-TFA-Token`.
+
+  **Example response:**
+  ```json
+  [
+    {
+      "name": "email",
+      "target": "user@example.org"
+    }
+  ]
+  ```
+
+  Valid delivery method names are defined in `TwoFactorConstants`:
+  - `TwoFactorConstants.EMAIL_DELIVERY_METHOD_NAME` = `"email"`
+  - `TwoFactorConstants.SMS_DELIVERY_METHOD_NAME` = `"sms"`
+</Accordion>
+
+<Accordion title="POST /api/v1/twofactor — Request OTP token">
+  Generates and delivers an OTP to the specified delivery method.
+
+  **Query parameters:**
+  - `deliveryMethod` — `email` or `sms`
+  - `extendedToken` — `true` to request a longer-lived access token (default `false`)
+
+  **Required headers:** `Authorization: Basic <b64>`, `Fineract-Platform-TenantId: <tenant>`
+
+  ```bash
+  curl -X POST \
+    "https://localhost:8443/fineract-provider/api/v1/twofactor?deliveryMethod=email&extendedToken=false&tenantIdentifier=default" \
+    -H "Authorization: Basic bWlmb3M6cGFzc3dvcmQ=" \
+    -H "Content-Type: application/json"
+  ```
+
+  Returns `OTPMetadata` containing token delivery confirmation details.
+</Accordion>
+
+<Accordion title="POST /api/v1/twofactor/validate — Exchange OTP for TFA token">
+  Validates the OTP and issues a time-bounded `TFAccessToken`.
+
+  **Query parameters:**
+  - `token` — the OTP received via email/SMS
+
+  **Required headers:** `Authorization: Basic <b64>`, `Fineract-Platform-TenantId: <tenant>`
+
+  ```bash
+  curl -X POST \
+    "https://localhost:8443/fineract-provider/api/v1/twofactor/validate?token=A3F9K2&tenantIdentifier=default" \
+    -H "Authorization: Basic bWlmb3M6cGFzc3dvcmQ="
+  ```
+
+  **Example response:**
+  ```json
+  {
+    "token": "3a8f2b1c9d4e5f6a7b8c9d0e1f2a3b4c",
+    "validFrom": "2024-01-15T10:00:00Z",
+    "validTo": "2024-01-15T10:30:00Z"
+  }
+  ```
+</Accordion>
+
+<Accordion title="POST /api/v1/twofactor/invalidate — Revoke TFA token">
+  Invalidates an active `TFAccessToken`, effectively logging the 2FA session out.
+
+  **Required headers:** `Authorization: Basic <b64>`, `Fineract-Platform-TenantId: <tenant>`, `Fineract-Platform-TFA-Token: <token>`
+
+  **Request body:**
+  ```json
+  { "token": "3a8f2b1c9d4e5f6a7b8c9d0e1f2a3b4c" }
+  ```
+
+  Handled by `InvalidateTFAccessTokenCommandHandler` via the command framework.
+</Accordion>
+
+## Configuration Keys
+
+The 2FA subsystem is configurable at runtime through the `TwoFactorConfiguration` entity (table: `m_configuration`), exposed via `GET/PUT /api/v1/twofactor/configure`. All key names are defined in `TwoFactorConfigurationConstants` (`org.apache.fineract.infrastructure.security.constants`):
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `otp-delivery-email-enable` | Boolean | Enable email OTP delivery |
+| `otp-delivery-email-subject` | String | Email subject template |
+| `otp-delivery-email-body` | String | Email body template (include `{{token}}` placeholder) |
+| `otp-delivery-sms-enable` | Boolean | Enable SMS OTP delivery |
+| `otp-delivery-sms-provider` | Number | SMS provider ID |
+| `otp-delivery-sms-text` | String | SMS message template |
+| `otp-token-live-time` | Number | OTP token validity in seconds |
+| `otp-token-length` | Number | Length of the generated OTP (alphanumeric characters) |
+| `access-token-live-time` | Number | TFA access token lifetime in seconds (standard) |
+| `access-token-live-time-extended` | Number | TFA access token lifetime when `extendedToken=true` |
+
+<Steps>
+  <Step title="Enable 2FA in application.properties">
+    Set `FINERACT_SECURITY_2FA_ENABLED=true` in your environment or directly in `application.properties`. Restart the server.
+  </Step>
+  <Step title="Configure delivery method">
+    Use `PUT /api/v1/twofactor/configure` (requires a valid TFA token itself — bootstrap with a `BYPASS_TWOFACTOR` admin user) to set `otp-delivery-email-enable=true` and configure the email templates.
+  </Step>
+  <Step title="Grant BYPASS_TWOFACTOR to the admin user">
+    Assign the `BYPASS_TWOFACTOR` permission to the superuser role so that administrators can manage configuration without completing 2FA. See [Roles & Permissions](/security/roles-and-permissions).
+  </Step>
+  <Step title="Test the flow">
+    Log in via `POST /api/v1/authentication`, request an OTP via `POST /api/v1/twofactor?deliveryMethod=email`, then validate the token via `POST /api/v1/twofactor/validate?token=<otp>`. Use the returned TFA token in `Fineract-Platform-TFA-Token` headers on all subsequent calls.
+  </Step>
+</Steps>
+
+## Integration Test Reference
+
+The full end-to-end 2FA flow is exercised by `TwoFactorAuthenticationTest` in `twofactor-tests/src/test/java/org/apache/fineract/twofactortests/TwoFactorAuthenticationTest.java`. Key test scenarios:
+
+- **`testAccessWithoutTwofactor`** — verifies that authenticated-but-not-2FA-verified requests return HTTP 403.
+- **`testCheckTwofactorEnabled`** — verifies the `isTwoFactorAuthenticationRequired: true` flag in the login response.
+- **`testGetTwofactorMethods`** — verifies that delivery methods include `email` with the correct target address.
+- **`testTwofactorLogin`** — complete flow: request OTP via email → intercept with GreenMail → validate token → call protected endpoint → invalidate token → verify subsequent call returns 401.
+- **`testTfaConfigSettings`** — verifies that `otp-token-length` changes take effect immediately.

@@ -1,0 +1,240 @@
+---
+title: "Basic Auth and OAuth2 in Apache Fineract"
+sidebarTitle: "Auth Methods"
+description: "Configure HTTP Basic Auth or OAuth2 Authorization Code + PKCE in Fineract: headers, environment variables, client registration, and switching between modes."
+---
+
+Apache Fineract supports two primary authentication methods — HTTP Basic Authentication and OAuth2 Authorization Code with PKCE — and exactly one of them should be active at any given time. Both methods share the same underlying `AppUser` domain model and permission system, so the choice of auth method affects only how credentials are presented to the API, not what the authenticated user can do once logged in. The active mode is determined by two `@ConditionalOnProperty`-guarded Spring configuration classes: `SecurityConfig` for Basic Auth and `AuthorizationServerConfig` for OAuth2.
+
+## Choosing Between Modes
+
+The two modes are controlled by a pair of boolean properties. Set exactly one to `true`:
+
+```properties
+# fineract-provider/src/main/resources/application.properties
+fineract.security.basicauth.enabled=${FINERACT_SECURITY_BASICAUTH_ENABLED:true}
+fineract.security.oauth2.enabled=${FINERACT_SECURITY_OAUTH_ENABLED:false}
+```
+
+<Tabs>
+  <Tab title="Enable Basic Auth">
+    ```bash
+    export FINERACT_SECURITY_BASICAUTH_ENABLED=true
+    export FINERACT_SECURITY_OAUTH_ENABLED=false
+    ```
+    This activates `SecurityConfig` (`org.apache.fineract.infrastructure.core.config.SecurityConfig`), which registers `TenantAwareBasicAuthenticationFilter` and a `DaoAuthenticationProvider` backed by `TenantAwareJpaPlatformUserDetailsService`.
+  </Tab>
+  <Tab title="Enable OAuth2">
+    ```bash
+    export FINERACT_SECURITY_BASICAUTH_ENABLED=false
+    export FINERACT_SECURITY_OAUTH_ENABLED=true
+    ```
+    This activates `AuthorizationServerConfig` (`org.apache.fineract.infrastructure.security.config.AuthorizationServerConfig`), which registers the Spring Authorization Server alongside the resource server JWT validator.
+  </Tab>
+</Tabs>
+
+<Warning>
+  Setting both properties to `true` simultaneously will register conflicting `SecurityFilterChain` beans and result in unpredictable authentication behavior. Always enable exactly one mode.
+</Warning>
+
+---
+
+## HTTP Basic Authentication
+
+### How It Works
+
+When Basic Auth is enabled, every protected API request must carry two mandatory headers:
+
+| Header | Example | Purpose |
+|--------|---------|---------|
+| `Authorization` | `Basic bWlmb3M6cGFzc3dvcmQ=` | Base64-encoded `username:password` |
+| `Fineract-Platform-TenantId` | `default` | Identifies the target tenant |
+
+The flow is handled by `TenantAwareBasicAuthenticationFilter` (`org.apache.fineract.infrastructure.security.filter`), a subclass of Spring's `BasicAuthenticationFilter`:
+
+1. The filter reads the `Fineract-Platform-TenantId` request header. If absent, it falls back to the `tenantIdentifier` query parameter. If still absent, it throws `InvalidTenantIdentifierException` and returns HTTP 400.
+2. `AuthTenantDetailsService.loadTenantById()` fetches the `FineractPlatformTenant` and stores it in `ThreadLocalContextUtil`.
+3. The `Authorization: Basic …` token is extracted and stored in `ThreadLocalContextUtil.setAuthToken()` for downstream use.
+4. Spring's parent `BasicAuthenticationFilter` then invokes `DaoAuthenticationProvider` (concretely `TemporaryPasswordAwareAuthenticationProvider`) which calls `TenantAwareJpaPlatformUserDetailsService` to load and verify the `AppUser`.
+5. On success, `onSuccessfulAuthentication()` adds an `X-Notification-Refresh` response header indicating unread user notifications.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant F as TenantAwareBasicAuthenticationFilter
+    participant T as AuthTenantDetailsService
+    participant A as DaoAuthenticationProvider
+    participant U as TenantAwareJpaPlatformUserDetailsService
+
+    C->>F: POST /api/v1/loans\nAuthorization: Basic <b64>\nFineract-Platform-TenantId: default
+    F->>T: loadTenantById("default")
+    T-->>F: FineractPlatformTenant
+    F->>A: authenticate(username, password)
+    A->>U: loadUserByUsername(username)
+    U-->>A: AppUser
+    A-->>F: Authentication (authenticated=true)
+    F-->>C: 200 OK + X-Notification-Refresh: false
+```
+
+### Obtaining the Base64 Token via the Login Endpoint
+
+Rather than computing the Base64 string manually, clients can POST credentials to `/api/v1/authentication` and receive a pre-encoded key:
+
+```bash
+curl -X POST \
+  "https://localhost:8443/fineract-provider/api/v1/authentication?tenantIdentifier=default" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "mifos", "password": "password"}'
+```
+
+The response contains `base64EncodedAuthenticationKey` which can be used directly in subsequent `Authorization: Basic <key>` headers:
+
+```json
+{
+  "username": "mifos",
+  "userId": 1,
+  "base64EncodedAuthenticationKey": "bWlmb3M6cGFzc3dvcmQ=",
+  "authenticated": true,
+  "officeId": 1,
+  "officeName": "Head Office",
+  "roles": [...],
+  "permissions": [...],
+  "isTwoFactorAuthenticationRequired": false
+}
+```
+
+This endpoint is implemented by `AuthenticationApiResource` (`org.apache.fineract.infrastructure.security.api`), which is itself guarded by `@ConditionalOnProperty("fineract.security.basicauth.enabled")`.
+
+<Tip>
+  The `isTwoFactorAuthenticationRequired` field in the login response tells the client whether it must complete a 2FA token exchange before calling protected endpoints. See the [Two-Factor Auth](/security/two-factor-auth) page for details.
+</Tip>
+
+### CORS and Preflight Requests
+
+`TenantAwareBasicAuthenticationFilter.doFilterInternal()` explicitly short-circuits for `OPTIONS` requests, passing them through the filter chain without authentication to allow browser CORS preflight requests to succeed:
+
+```java
+if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+    filterChain.doFilter(request, response);
+}
+```
+
+---
+
+## OAuth2 Authorization Code with PKCE
+
+### Architecture Overview
+
+The OAuth2 implementation uses Spring Authorization Server. `AuthorizationServerConfig` registers three `SecurityFilterChain` beans with `@Order(1)`, `@Order(2)`, and `@Order(3)`:
+
+- **Order 1** — Public endpoints (`/swagger-ui/**`, `/actuator/**`, etc.) are permitted without authentication.
+- **Order 2** — The Authorization Server itself handles the `/oauth2/authorize`, `/oauth2/token`, and related endpoints.
+- **Order 3** — Protected API endpoints validate Bearer JWTs as a resource server via `oauth2ResourceServer().jwt()`.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser / SPA
+    participant AS as Fineract Auth Server\n(/oauth2/authorize)
+    participant RS as Fineract Resource Server\n(/api/v1/*)
+
+    B->>AS: GET /oauth2/authorize?response_type=code\n&client_id=frontend-client\n&redirect_uri=http://localhost:3000/callback\n&scope=read\n&code_challenge=<S256 hash>\n&code_challenge_method=S256
+    AS-->>B: Redirect to /login form
+    B->>AS: POST /login?tenantId=default&username=mifos&password=password
+    AS-->>B: Redirect to callback?code=<auth_code>
+    B->>AS: POST /oauth2/token\nclient_id=frontend-client\ngrant_type=authorization_code\ncode=<auth_code>\ncode_verifier=<original PKCE verifier>
+    AS-->>B: {"access_token": "<JWT>", "token_type": "Bearer", ...}
+    B->>RS: GET /api/v1/userdetails?tenantIdentifier=default\nAuthorization: Bearer <JWT>
+    RS-->>B: 200 OK — authenticated user data
+```
+
+### Client Registration Configuration
+
+The built-in `frontend-client` registration is configured through `application.properties` and loaded into Spring's `RegisteredClientRepository` at startup by `AuthorizationServerConfig.registeredClientRepository()`:
+
+```properties
+# application.properties — OAuth2 client registration (lines 38–42)
+fineract.security.oauth2.client.registrations.frontend-client.client-id=\
+  ${FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_ID:frontend-client}
+
+fineract.security.oauth2.client.registrations.frontend-client.scopes=\
+  ${FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_SCOPES:read,write}
+
+fineract.security.oauth2.client.registrations.frontend-client.authorization-grant-types=\
+  ${FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_GRANTS:authorization_code,refresh_token}
+
+fineract.security.oauth2.client.registrations.frontend-client.redirect-uris=\
+  ${FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_REDIRECT:http://localhost:3000/callback}
+
+fineract.security.oauth2.client.registrations.frontend-client.require-authorization-consent=\
+  ${FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_CONSENT:false}
+```
+
+The corresponding environment variables for production override:
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `FINERACT_SECURITY_OAUTH_ENABLED` | `false` | Activates the OAuth2 configuration |
+| `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_ID` | `frontend-client` | OAuth2 client ID |
+| `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_SCOPES` | `read,write` | Comma-separated OAuth2 scopes |
+| `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_GRANTS` | `authorization_code,refresh_token` | Allowed grant types |
+| `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_REDIRECT` | `http://localhost:3000/callback` | Allowed redirect URI |
+| `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_CONSENT` | `false` | Require explicit user consent screen |
+
+The `frontend-client` uses `ClientAuthenticationMethod.NONE` (public client — no client secret), making it suitable for browser-based SPAs that cannot safely store a secret.
+
+### JWT Token Customization
+
+`AuthorizationServerConfig` registers an `OAuth2TokenCustomizer<JwtEncodingContext>` bean that adds Fineract-specific claims to every issued JWT:
+
+```java
+// AuthorizationServerConfig.tokenCustomizer()
+context.getClaims()
+    .claim("scope", scope)   // list of granted authority strings
+    .claim("role", roles)    // list of role names from AppUser.getRoles()
+    .claim("tenant", details.getTenantId());  // tenant resolved from login form
+```
+
+On the resource server side, `FineractJwtAuthenticationTokenConverter` (`org.apache.fineract.infrastructure.security.converter`) reads these claims back and reconstructs an authenticated `AppUser` via `TenantAwareJpaPlatformUserDetailsService`.
+
+### Tenant Resolution in OAuth2 Mode
+
+In OAuth2 mode, the tenant is embedded in the JWT as the `tenant` claim (set during the login form step via `TenantAuthenticationDetails`). The `TenantAwareAuthenticationFilter` (`org.apache.fineract.infrastructure.security.filter`) — an `OncePerRequestFilter` — extracts the Bearer token from each request, parses the JWT (without validation, which the resource server handles separately), reads the `tenant` claim, and calls `AuthTenantDetailsService.loadTenantById()` to populate `ThreadLocalContextUtil`.
+
+<Note>
+  Unlike Basic Auth mode, OAuth2 mode does **not** require the `Fineract-Platform-TenantId` header on every request. The tenant is carried inside the JWT itself.
+</Note>
+
+### Full OAuth2 Authorization Code Flow (Integration Test Reference)
+
+The `OAuth2AuthenticationTest` in `oauth2-tests/src/test/java/org/apache/fineract/oauth2tests/OAuth2AuthenticationTest.java` demonstrates the complete browser-redirected flow using Selenium and a local HTTP server on port 3000 to capture the authorization code callback. The integration test verifies that:
+
+1. Unauthenticated requests to `/api/v1/offices/1` return HTTP 401.
+2. After completing the authorization code exchange, the resulting Bearer token successfully authenticates `/api/v1/userdetails`.
+
+---
+
+## Environment Variable Quick Reference
+
+<CardGroup cols={2}>
+  <Card title="Basic Auth Variables" icon="terminal">
+    ```bash
+    FINERACT_SECURITY_BASICAUTH_ENABLED=true
+    FINERACT_SECURITY_OAUTH_ENABLED=false
+    FINERACT_SECURITY_2FA_ENABLED=false
+    FINERACT_SECURITY_CORS_ENABLED=true
+    FINERACT_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS=https://app.example.com
+    FINERACT_SECURITY_HSTS_ENABLED=true
+    ```
+  </Card>
+  <Card title="OAuth2 Variables" icon="terminal">
+    ```bash
+    FINERACT_SECURITY_BASICAUTH_ENABLED=false
+    FINERACT_SECURITY_OAUTH_ENABLED=true
+    FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_ID=my-client
+    FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_SCOPES=read,write
+    FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_GRANTS=authorization_code,refresh_token
+    FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_REDIRECT=https://app.example.com/callback
+    FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_CONSENT=false
+    ```
+  </Card>
+</CardGroup>

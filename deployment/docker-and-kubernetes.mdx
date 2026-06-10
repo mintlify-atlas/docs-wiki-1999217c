@@ -1,0 +1,400 @@
+---
+title: "Docker and Kubernetes Deployment for Apache Fineract"
+sidebarTitle: "Docker & Kubernetes"
+description: "Run Fineract with Docker Compose (PostgreSQL, Kafka, MariaDB variants) and deploy to Kubernetes with the bundled fineract-server-deployment.yml manifest."
+---
+
+Apache Fineract ships a rich collection of Docker Compose files and Kubernetes manifests that cover every common deployment scenario: local development with PostgreSQL, event-driven deployments with Kafka, community front-end stacks, and legacy MySQL/MariaDB configurations. The official Docker image is published to [Docker Hub](https://hub.docker.com/r/apache/fineract) as `apache/fineract`.
+
+<Warning>
+All Docker Compose files in the repository include the comment **"FOR TESTING PURPOSES ONLY! NOT SUITABLE FOR PRODUCTION USAGE!"** They use hardcoded credentials and are intended for local development and CI testing only.
+</Warning>
+
+## Docker Compose Files Overview
+
+<CardGroup cols={2}>
+  <Card title="docker-compose.yml" icon="docker">
+    Base file. PostgreSQL backend. Extends shared service fragments from `config/docker/compose/`.
+  </Card>
+  <Card title="docker-compose-postgresql.yml" icon="database">
+    Explicit PostgreSQL 18.x stack with version pinning. Most commonly used for testing.
+  </Card>
+  <Card title="docker-compose-postgresql-kafka.yml" icon="bolt">
+    Multi-node stack: manager + 2 worker replicas + Kafka for remote job messaging.
+  </Card>
+  <Card title="docker-compose-community-app.yml" icon="globe">
+    Adds the Fineract Community App (web UI) container to the stack.
+  </Card>
+  <Card title="docker-compose-development.yml" icon="code">
+    Developer-mode stack with debug port (5000) exposed.
+  </Card>
+  <Card title="docker-compose-mariadb.yml" icon="database">
+    Legacy MariaDB backend (deprecated path, for compatibility testing).
+  </Card>
+</CardGroup>
+
+## Base Architecture: Shared Service Fragments
+
+All Compose files use Compose's `extends` feature to share service definitions from `config/docker/compose/`:
+
+```yaml
+# config/docker/compose/fineract.yml  (shared Fineract service definition)
+services:
+  fineract:
+    image: fineract:latest
+    user: "${FINERACT_USER:-1000}:${FINERACT_GROUP:-1000}"
+    volumes:
+      - ${PWD}/config/docker/logback/logback-override.xml:/app/logback-override.xml
+      - ${PWD}/config/docker/aws/etc/credentials:/etc/aws/credentials:ro
+      - ${PWD}/build/fineract/logs:/var/logs/fineract:rw
+    tmpfs:
+      - /tmp:rw,nosuid,size=256m
+    healthcheck:
+      test: ["CMD", "sh", "-c",
+        "while ! nc -z localhost 8443; do sleep 1; printf '-'; done"]
+      timeout: 1s
+      retries: 60
+```
+
+```yaml
+# config/docker/compose/postgresql.yml  (shared PostgreSQL service)
+services:
+  postgresql:
+    image: postgres:18.3
+    volumes:
+      - ${PWD}/config/docker/postgresql/docker-entrypoint-initdb.d/01-init.sh:/docker-entrypoint-initdb.d/01-init.sh:Z,ro
+    restart: always
+    env_file:
+      - ${PWD}/config/docker/env/postgresql.env
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "root"]
+      timeout: 10s
+      retries: 10
+    ports:
+      - "5432:5432"
+```
+
+## `docker-compose.yml` — Default PostgreSQL Stack
+
+```yaml
+# docker-compose.yml
+services:
+  db:
+    extends:
+      file: ./config/docker/compose/postgresql.yml
+      service: postgresql
+
+  fineract:
+    extends:
+      file: ./config/docker/compose/fineract.yml
+      service: fineract
+    ports:
+      - "8443:8443"
+      - "5000:5000"    # debug port (development variant)
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./config/docker/env/fineract.env
+      - ./config/docker/env/fineract-common.env
+      - ./config/docker/env/fineract-postgresql.env
+```
+
+Start with:
+```bash
+docker compose up
+```
+
+## `docker-compose-postgresql.yml` — Explicit Version
+
+Identical to the base file but with explicit `version: "3.8"` and no debug port:
+
+```bash
+docker compose -f docker-compose-postgresql.yml up
+```
+
+## `docker-compose-postgresql-kafka.yml` — Event-Driven Multi-Node
+
+This file demonstrates a production-like split deployment with:
+- **1 Kafka broker** (`apache/kafka:4.2.0-rc2`)
+- **1 fineract-manager** instance (handles API requests and manages jobs)
+- **2 fineract-worker** replicas (process batch job partitions)
+
+```yaml
+# docker-compose-postgresql-kafka.yml
+version: "3.7"
+services:
+  kafka:
+    image: "apache/kafka:4.2.0-rc2"
+    ports:
+      - "9092:9092"
+    env_file:
+      - ./config/docker/env/kafka-server.env
+
+  db:
+    extends:
+      file: ./config/docker/compose/postgresql.yml
+      service: postgresql
+
+  fineract-manager:
+    extends:
+      file: ./config/docker/compose/fineract.yml
+      service: fineract
+    ports:
+      - "8443:8443"
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    env_file:
+      - ./config/docker/env/fineract-manager.env
+      - ./config/docker/env/fineract-common.env
+      - ./config/docker/env/fineract-postgresql.env
+      - ./config/docker/env/kafka-client.env
+
+  fineract-worker:
+    extends:
+      file: ./config/docker/compose/fineract.yml
+      service: fineract
+    deploy:
+      mode: replicated
+      replicas: 2
+    ports:
+      - "8444-8445:8443"
+    depends_on:
+      fineract-manager:
+        condition: service_healthy
+    env_file:
+      - ./config/docker/env/fineract-worker.env
+      - ./config/docker/env/fineract-common.env
+      - ./config/docker/env/fineract-postgresql.env
+      - ./config/docker/env/kafka-client.env
+```
+
+```bash
+docker compose -f docker-compose-postgresql-kafka.yml up --scale fineract-worker=2
+```
+
+## Key Environment Variables
+
+Environment is split across multiple `.env` files under `config/docker/env/`:
+
+### PostgreSQL Connection (`fineract-postgresql.env`)
+
+```bash
+# Tenant store (HikariCP)
+FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME=org.postgresql.Driver
+FINERACT_HIKARI_JDBC_URL=jdbc:postgresql://db:5432/fineract_tenants
+FINERACT_HIKARI_USERNAME=postgres
+FINERACT_HIKARI_PASSWORD=skdcnwauicn2ucnaecasdsajdnizucawencascdca
+
+# Default tenant database
+FINERACT_DEFAULT_TENANTDB_PORT=5432
+FINERACT_DEFAULT_TENANTDB_UID=postgres
+```
+
+### Mode Flags (manager vs worker)
+
+| Variable | Manager | Worker |
+|---|---|---|
+| `FINERACT_MODE_READ_ENABLED` | `true` | `false` |
+| `FINERACT_MODE_WRITE_ENABLED` | `true` | `false` |
+| `FINERACT_MODE_BATCH_MANAGER_ENABLED` | `true` | `false` |
+| `FINERACT_MODE_BATCH_WORKER_ENABLED` | `false` | `true` |
+
+## Kubernetes Deployment
+
+The `kubernetes/fineract-server-deployment.yml` file provides a production-grade Kubernetes manifest with a `Service` (LoadBalancer) and `Deployment`:
+
+```yaml
+# kubernetes/fineract-server-deployment.yml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: fineract-server
+  name: fineract-server
+spec:
+  ports:
+    - protocol: TCP
+      port: 8443
+      targetPort: 8443
+  selector:
+    app: fineract-server
+    tier: backend
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fineract-server
+spec:
+  selector:
+    matchLabels:
+      app: fineract-server
+      tier: backend
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      initContainers:
+        - name: init-mydb
+          image: busybox:1.28
+          command: ['sh', '-c',
+            'while ! nc -z "fineractmysql" 3306; do sleep 1; done']
+      containers:
+        - name: fineract-server
+          image: apache/fineract:latest
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+            requests:
+              cpu: "200m"
+              memory: "1Gi"
+```
+
+### Health and Readiness Probes
+
+The Kubernetes manifest configures Spring Boot Actuator probes over HTTPS:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /fineract-provider/actuator/health/liveness
+    port: 8443
+    scheme: HTTPS
+  initialDelaySeconds: 90
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /fineract-provider/actuator/health/readiness
+    port: 8443
+    scheme: HTTPS
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  failureThreshold: 3
+```
+
+These endpoints are enabled in `application.properties`:
+```properties
+management.endpoint.health.probes.enabled=true
+management.health.livenessState.enabled=true
+management.health.readinessState.enabled=true
+```
+
+### Environment Variables in Kubernetes
+
+Credentials are sourced from Kubernetes Secrets:
+
+```yaml
+env:
+  - name: FINERACT_NODE_ID
+    value: '1'
+  - name: FINERACT_HIKARI_DRIVER_CLASS_NAME
+    value: org.mariadb.jdbc.Driver
+  - name: FINERACT_HIKARI_JDBC_URL
+    value: jdbc:mariadb://fineractmysql:3306/fineract_tenants
+  - name: FINERACT_HIKARI_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: fineract-tenants-db-secret
+        key: username
+  - name: FINERACT_HIKARI_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: fineract-tenants-db-secret
+        key: password
+  - name: FINERACT_DEFAULT_TENANTDB_HOSTNAME
+    value: fineractmysql
+  - name: FINERACT_DEFAULT_TENANTDB_PORT
+    value: '3306'
+  - name: JAVA_TOOL_OPTIONS
+    value: '-Xmx1G -XX:MaxMetaspaceSize=256m'
+```
+
+<Note>
+The Kubernetes manifest references `fineractmysql` as the database hostname. This was the original MySQL/MariaDB-based configuration. For PostgreSQL Kubernetes deployments, update the driver class and JDBC URL accordingly.
+</Note>
+
+## Official Docker Image
+
+The official image is published to Docker Hub as [`apache/fineract`](https://hub.docker.com/r/apache/fineract):
+
+```bash
+# Pull latest
+docker pull apache/fineract:latest
+
+# Run against a local PostgreSQL instance
+docker run --rm \
+  -e FINERACT_HIKARI_JDBC_URL=jdbc:postgresql://host.docker.internal:5432/fineract_tenants \
+  -e FINERACT_HIKARI_USERNAME=postgres \
+  -e FINERACT_HIKARI_PASSWORD=postgres \
+  -e FINERACT_DEFAULT_TENANTDB_HOSTNAME=host.docker.internal \
+  -e FINERACT_DEFAULT_TENANTDB_UID=postgres \
+  -e FINERACT_DEFAULT_TENANTDB_PWD=postgres \
+  -p 8443:8443 \
+  apache/fineract:latest
+```
+
+## Custom Docker Image
+
+The `custom/docker/` subproject builds a Docker image that bundles all custom modules discovered under `custom/<company>/`:
+
+```bash
+# Build custom image via Jib (pushes to registry)
+./gradlew :custom:docker:jib
+
+# Build and load into local Docker daemon
+./gradlew :custom:docker:jibDockerBuild
+```
+
+## Tomcat Configuration for WAR Deployment
+
+When deploying the WAR artifact from `:fineract-war`, Tomcat is configured via `docker/server.xml`. This is the connector configuration used for HTTPS with client certificate support and connection pool settings:
+
+```bash
+# Build WAR
+./gradlew :fineract-war:war
+
+# Deploy to Tomcat
+cp fineract-war/build/libs/fineract-provider.war $CATALINA_HOME/webapps/
+```
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/apache/fineract.git
+    cd fineract
+    ```
+  </Step>
+  <Step title="Build the Docker image">
+    ```bash
+    ./gradlew :fineract-provider:jibDockerBuild
+    ```
+    This builds the image tagged `fineract:latest` using the Jib plugin (no Docker daemon needed for the build, only for loading).
+  </Step>
+  <Step title="Start the stack">
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+  <Step title="Verify the health check">
+    ```bash
+    curl -k https://localhost:8443/fineract-provider/actuator/health
+    # {"status":"UP","components":{"livenessState":{"status":"UP"},...}}
+    ```
+  </Step>
+  <Step title="Access the API">
+    ```bash
+    curl -k -u mifos:password \
+      -H "Fineract-Platform-TenantId: default" \
+      https://localhost:8443/fineract-provider/api/v1/offices
+    ```
+  </Step>
+</Steps>

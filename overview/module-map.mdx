@@ -1,0 +1,112 @@
+---
+title: "Apache Fineract Gradle Module Map and Package Reference"
+sidebarTitle: "Module Map"
+description: "Complete table of every Gradle subproject in Apache Fineract, grouped by function, with purpose and primary Java packages for each module."
+---
+
+Apache Fineract is built as a Gradle multi-project. The root `settings.gradle` registers every subproject. This page maps each module to its purpose and the primary Java packages it owns, grouped by functional area. Use this as a navigation index when exploring the codebase.
+
+## Core & Bootstrap
+
+These modules form the irreducible nucleus of the platform. All other modules depend on `fineract-core`, and `fineract-provider` is the only runnable artifact.
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-core` | Lowest-common dependency. Exports base domain classes, infrastructure utilities, tenant model, Batch API, command domain, and `FineractProperties`. | `org.apache.fineract.infrastructure.core` · `org.apache.fineract.batch` · `org.apache.fineract.commands` |
+| `fineract-provider` | Assembly and bootstrap module. Contains `ServerApplication` (Spring Boot entry point), `FineractWebApplicationConfiguration`, and `FineractLiquibaseOnlyApplicationConfiguration`. | `org.apache.fineract` · `org.apache.fineract.infrastructure.core.boot` |
+| `fineract-security` | Spring Security configuration for HTTP Basic auth, OAuth2 resource server, two-factor authentication, platform security context, and CORS configuration. | `org.apache.fineract.infrastructure.security` |
+| `fineract-validation` | Shared validation utilities, `DataValidatorBuilder`, and `FineractValidationCondition` wiring. | `org.apache.fineract.infrastructure.core.data` |
+| `fineract-cob` | Close-of-Business Spring Batch job configuration, business-date progression, inline COB loan processing, and partition management for remote execution. | `org.apache.fineract.cob` |
+
+## Command System
+
+The command system spans multiple modules to allow different dispatch and persistence back-ends to be composed at runtime.
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-command` | Core CQRS interfaces: `Command`, `CommandDispatcher`, `CommandHandler`, `CommandHandlerManager`, `CommandStore`, `CommandState`, hook interfaces (`CommandHookBefore/After/Error`), `CommandHookManager`, `CommandProperties`. | `org.apache.fineract.command.core` |
+| `fineract-command-jdbc` | JDBC-backed `CommandStore` implementation using Spring Data JDBC. Includes `JdbcCommandStore`, `CommandEntity`, `CommandRepository`, and JSON converters. | `org.apache.fineract.command.jdbc` |
+| `fineract-command-audit` | `CommandHookBefore/After/Error` implementations that write command state to the `CommandStore` for audit purposes. Activated by `fineract.command.hooks.audit-post=true`. | `org.apache.fineract.command.audit` |
+| `fineract-command-async` | `AsyncCommandDispatcher` — a `CompletableFuture`-based dispatcher activated by `fineract.command.async.enabled=true`. Marked WIP. | `org.apache.fineract.command.async` |
+| `fineract-command-disruptor` | `DisruptorCommandDispatcher` — LMAX Disruptor ring-buffer dispatcher activated by `fineract.command.disruptor.enabled=true`. Marked WIP. | `org.apache.fineract.command.disruptor` |
+| `fineract-command-test` | Test fixtures, stubs, and helpers for the command system. | `org.apache.fineract.command.test` |
+
+## Loan
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-loan` | Core loan product domain: loan lifecycle (origination → disbursement → repayment → closure), interest calculations, charges, rescheduling, write-off, and REST resources. | `org.apache.fineract.portfolio.loanaccount` · `org.apache.fineract.portfolio.loanproduct` |
+| `fineract-progressive-loan` | Progressive repayment schedule engine with pluggable instalment calculation strategies. Includes the embeddable schedule generator as a sub-project. | `org.apache.fineract.portfolio.loanproduct.calc` |
+| `fineract-progressive-loan-embeddable-schedule-generator` | Standalone library for generating progressive loan schedules; can be embedded in other JVM applications without the full Fineract stack. | `org.apache.fineract.portfolio.loanaccount.loanschedule` |
+| `fineract-working-capital-loan` | Working-capital loan type specialisation built on top of `fineract-loan`. | `org.apache.fineract.portfolio.workingcapital` |
+| `fineract-loan-origination` | Loan origination workflow module, gated by `fineract.module.loan-origination.enabled`. | `org.apache.fineract.portfolio.loanorigination` |
+
+## Savings
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-savings` | Savings account lifecycle, fixed deposits, recurring deposits, interest posting, balance rules, and sweep. | `org.apache.fineract.portfolio.savings` · `org.apache.fineract.portfolio.depositaccount` |
+
+## Accounting
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-accounting` | Double-entry accounting: chart of accounts, GL accounts, journal entries, financial activity mappings, periodic accrual, and trial balance. | `org.apache.fineract.accounting` |
+
+## Charges, Tax & Rates
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-charge` | Charge definitions shared by loans and savings (flat, percentage, tiered). | `org.apache.fineract.portfolio.charge` |
+| `fineract-tax` | Tax component and tax group definitions attached to charges. | `org.apache.fineract.portfolio.tax` |
+| `fineract-rates` | Floating rate configuration for variable-rate loan products. | `org.apache.fineract.portfolio.floatingrates` |
+
+## Client, Group & Branch
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-branch` | Office and branch hierarchy, staff management. | `org.apache.fineract.organisation.office` · `org.apache.fineract.organisation.staff` |
+| `fineract-document` | Document storage with filesystem and AWS S3 backends, configurable via `FineractProperties.FineractContentProperties`. | `org.apache.fineract.infrastructure.documentmanagement` |
+
+## Investor & External Asset Transfer
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-investor` | External asset owner configuration and loan-to-investor transfer workflows. Gated by `fineract.module.investor.enabled`. | `org.apache.fineract.investor` |
+
+## Reporting & Mix
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-report` | Pentaho-report execution and SQL-parameterised report runner. S3 export support via `FineractProperties.FineractReportProperties`. | `org.apache.fineract.infrastructure.report` |
+| `fineract-mix` | MIX Market XBRL-based reporting for microfinance transparency metrics. | `org.apache.fineract.mix` |
+
+## Avro Schemas & Events
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-avro-schemas` | Avro schema definitions for business events published to Kafka. Generated classes are used by event producers. | `org.apache.fineract.avro` |
+
+## Client SDKs
+
+| Module | Purpose | Primary Java Packages |
+|---|---|---|
+| `fineract-client` | Auto-generated Java API client (Retrofit/OkHttp) from the OpenAPI spec. | `org.apache.fineract.client` |
+| `fineract-client-feign` | Feign-based variant of the generated client for Spring Cloud / microservice consumers. | `org.apache.fineract.client.feign` |
+
+## Build, Test & Documentation
+
+| Module | Purpose |
+|---|---|
+| `fineract-war` | Produces a traditional WAR artifact for deployment to an external servlet container (Tomcat 10+). Not recommended; prefer the bootJar. |
+| `integration-tests` | Full-stack integration tests using the HTTP API (Retrofit client against a live server). |
+| `twofactor-tests` | Integration tests for the two-factor authentication flows. |
+| `oauth2-tests` | Integration tests for OAuth2 resource-server auth flows. |
+| `fineract-e2e-tests-core` | Shared fixtures and DSL for end-to-end tests. |
+| `fineract-e2e-tests-runner` | Test runner that executes e2e scenarios against a running Fineract instance. |
+| `fineract-doc` | AsciiDoc-based official documentation source, published at `fineract.apache.org/docs`. |
+| `custom/docker` | Custom Docker image assembling all optional modules. |
+
+<Note>
+Custom modules follow the pattern `custom/<company>/<category>/<module>` and are auto-discovered by `settings.gradle` at build time, allowing organisations to add proprietary modules without modifying the core build scripts.
+</Note>

@@ -1,0 +1,109 @@
+---
+title: "Apache Fineract: Open-Source Core Banking Platform"
+sidebarTitle: "Introduction"
+description: "Engineering orientation to Apache Fineract — a multi-tenant, multi-module Spring Boot core banking platform covering loans, savings, accounting, and more."
+---
+
+Apache Fineract is an open-source core banking platform that provides a flexible, extensible foundation for delivering financial services to underserved and unbanked populations. The project is incubated under the Apache Software Foundation and is released under the Apache License 2.0. This document is an engineering orientation: what the system does, how it is structured as a codebase, and what runtime dependencies it brings.
+
+## What Fineract Provides
+
+Fineract exposes a REST API (backed by Jersey/JAX-RS) covering the following functional domains:
+
+<CardGroup cols={2}>
+  <Card title="Loan Products" icon="hand-holding-dollar">
+    Full loan lifecycle — origination, approval, disbursement, repayment scheduling, interest calculation, and Close-of-Business (COB) batch processing. Progressive loan and working-capital loan modules are optional.
+  </Card>
+  <Card title="Savings & Deposits" icon="piggy-bank">
+    Savings accounts, fixed and recurring deposits with interest posting, charges, and product configuration through the `fineract-savings` module.
+  </Card>
+  <Card title="Accounting" icon="book">
+    Double-entry accounting with chart-of-accounts management, journal entries, financial activity mappings, and periodic accruals through `fineract-accounting`.
+  </Card>
+  <Card title="Multi-Tenancy" icon="building">
+    Full per-tenant database isolation. Each tenant has its own schema (or database) with independent Liquibase-managed migrations on startup.
+  </Card>
+  <Card title="Security" icon="shield">
+    Pluggable authentication: HTTP Basic, OAuth2, and optional two-factor auth through `fineract-security`. Role-based permissions per resource/action.
+  </Card>
+  <Card title="Jobs & COB" icon="clock">
+    Spring Batch–driven scheduled jobs, including Close-of-Business processing. Supports local and distributed (partitioned) job execution via ActiveMQ or Kafka.
+  </Card>
+</CardGroup>
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Runtime | Java 21 (Azul Zulu recommended), embedded Tomcat via Spring Boot |
+| Web Framework | Spring Boot 3.x with Jersey (JAX-RS) for REST endpoints |
+| Persistence | JPA/Hibernate, Spring Data, HikariCP connection pooling |
+| Database | PostgreSQL ≥ 18 (primary); MariaDB/MySQL deprecated |
+| Migrations | Liquibase — applied per-tenant on startup |
+| Build | Gradle multi-project build (`settings.gradle`) |
+| Messaging | Spring Events (default), Apache ActiveMQ, Apache Kafka (optional) |
+| API Docs | OpenAPI 3 / Swagger UI at `/fineract-provider/swagger-ui/index.html` |
+
+## Gradle Module Structure
+
+The root `settings.gradle` declares all subprojects. The codebase is divided into focused modules rather than a monolithic WAR:
+
+<CardGroup cols={2}>
+  <Card title="Core & Infrastructure" icon="cube">
+    `fineract-core`, `fineract-security`, `fineract-validation`, `fineract-cob`, `fineract-provider`
+  </Card>
+  <Card title="Command System" icon="terminal">
+    `fineract-command`, `fineract-command-jdbc`, `fineract-command-audit`, `fineract-command-async`, `fineract-command-disruptor`, `fineract-command-test`
+  </Card>
+  <Card title="Domain Modules" icon="database">
+    `fineract-loan`, `fineract-savings`, `fineract-accounting`, `fineract-charge`, `fineract-tax`, `fineract-rates`, `fineract-investor`, `fineract-branch`, `fineract-document`
+  </Card>
+  <Card title="Extended / Optional" icon="puzzle-piece">
+    `fineract-progressive-loan`, `fineract-progressive-loan-embeddable-schedule-generator`, `fineract-working-capital-loan`, `fineract-loan-origination`, `fineract-mix`, `fineract-report`
+  </Card>
+  <Card title="Client SDKs" icon="code">
+    `fineract-client` (generated Java SDK), `fineract-client-feign`, `fineract-avro-schemas`
+  </Card>
+  <Card title="Test & Build" icon="flask">
+    `integration-tests`, `twofactor-tests`, `oauth2-tests`, `fineract-e2e-tests-core`, `fineract-e2e-tests-runner`, `fineract-war`, `fineract-doc`
+  </Card>
+</CardGroup>
+
+## Running Fineract Locally
+
+The fastest path to a running instance requires Java 21 and PostgreSQL:
+
+```bash
+git clone https://github.com/apache/fineract.git
+cd fineract
+
+# Create the two required databases
+./gradlew createPGDB -PdbName=fineract_tenants
+./gradlew createPGDB -PdbName=fineract_default
+
+# Start the embedded-Tomcat Spring Boot server
+./gradlew devRun
+```
+
+After startup the API is available at `https://localhost:8443/fineract-provider/api/v1/`. Every request must carry the `Fineract-Platform-TenantId` header (e.g. `default`) and an `Authorization` header.
+
+<Tip>
+Override any default from `fineract-provider/src/main/resources/application.properties` via environment variables or Java system properties. Environment variables use `FINERACT_` prefix with underscores replacing dots (e.g. `FINERACT_HIKARI_JDBC_URL`).
+</Tip>
+
+<Note>
+A self-contained bootJar is built with `./gradlew clean bootJar`. The output lands in `fineract-provider/build/libs/`. The official Docker image at `apache/fineract` on Docker Hub is built from the same JAR.
+</Note>
+
+## Key Entry Points for Developers
+
+| Concern | Start Here |
+|---|---|
+| Application bootstrap | `org.apache.fineract.ServerApplication` |
+| Spring root configuration | `org.apache.fineract.infrastructure.core.boot.FineractWebApplicationConfiguration` |
+| All `fineract.*` properties | `org.apache.fineract.infrastructure.core.config.FineractProperties` |
+| Per-tenant context | `org.apache.fineract.infrastructure.core.service.ThreadLocalContextUtil` |
+| Write command dispatch | `org.apache.fineract.commands.service.PortfolioCommandSourceWritePlatformService` |
+| Batch HTTP API | `org.apache.fineract.batch.api.BatchApiResource` |
+
+For a deeper look at how the modules interconnect, see the [Architecture](./architecture) page.

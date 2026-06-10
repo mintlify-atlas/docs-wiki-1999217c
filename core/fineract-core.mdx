@@ -1,0 +1,191 @@
+---
+title: "fineract-core: Shared Infrastructure and Base Domain Classes"
+sidebarTitle: "fineract-core"
+description: "Deep reference for the fineract-core module: FineractProperties, ExternalId, base JPA classes, Batch API, and the legacy command annotation system."
+---
+
+The `fineract-core` module is the lowest common dependency in the entire Fineract build graph. Every domain module, every command module, and the provider assembly module all depend on it. It exports no business logic — only the infrastructure contracts, base classes, utility services, and configuration bindings that every other module needs. Understanding `fineract-core` is therefore prerequisite to understanding any other part of the platform.
+
+## Module Coordinates
+
+- **Gradle project**: `:fineract-core`
+- **Root Java package**: `org.apache.fineract`
+- **Key sub-packages**: `infrastructure.core`, `batch`, `commands`
+
+## FineractProperties
+
+`FineractProperties` (package `org.apache.fineract.infrastructure.core.config`) is the single `@ConfigurationProperties(prefix = "fineract")` root class. All `fineract.*` application properties are bound into this type hierarchy, which is enabled by `FineractWebApplicationConfiguration` via:
+
+```java
+@EnableConfigurationProperties({ FineractProperties.class, LiquibaseProperties.class })
+```
+
+The top-level fields and their nested types cover:
+
+<Accordion title="Tenant configuration (FineractTenantProperties)">
+`fineract.tenant.*` — master-database JDBC host, port, username, password, timezone, and identifier for the default tenant. `FineractConfigProperties` (nested) lets you override per-tenant HikariCP pool sizes: `minPoolSize`, `maxPoolSize`, `leakDetectionThreshold`. Read/write split is supported via `readOnlyHost`, `readOnlyPort`, `readOnlyName`, etc.
+</Accordion>
+
+<Accordion title="Operational mode (FineractModeProperties)">
+`fineract.mode.*` — four boolean flags: `readEnabled`, `writeEnabled`, `batchWorkerEnabled`, `batchManagerEnabled`. The `isReadOnlyMode()` helper returns `true` when only reads are enabled, which is checked in `BatchApiResource` to block non-GET batch sub-requests in read-only nodes.
+</Accordion>
+
+<Accordion title="Security (FineractSecurityProperties)">
+`fineract.security.*` — toggles for `basicauth.enabled`, `twoFactor.enabled`, `hsts.enabled`, `oauth2.enabled`, and CORS configuration (`allowedOriginPatterns`, `allowedMethods`, `allowCredentials`).
+</Accordion>
+
+<Accordion title="Events and messaging">
+`fineract.events.external.*` — enables external business event publishing. Sub-properties for JMS (`eventQueueName`, `brokerUrl`) and Kafka (`bootstrapServers`, `topic.*`). Separate `fineract.remoteJobMessageHandler.*` section controls partitioned Spring Batch job messaging.
+</Accordion>
+
+<Accordion title="Loan processing, retry, cache, and more">
+Additional top-level sections: `fineract.loan.*` (transaction processor flags), `fineract.job.*` (COB enabled, stuck-retry threshold), `fineract.retry.*` (resilience4j retry config for command execution), `fineract.cache.*` (Caffeine TTL/max-entries), `fineract.query.inClauseParameterSizeLimit`, `fineract.sampling.*` (performance diagnostics).
+</Accordion>
+
+## Base Domain Classes
+
+### AbstractPersistableCustom
+
+```java
+// org.apache.fineract.infrastructure.core.domain.AbstractPersistableCustom
+@MappedSuperclass
+public abstract class AbstractPersistableCustom<T extends Serializable>
+        implements Persistable<T>, Serializable {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private T id;
+
+    @Transient
+    private boolean isNew = true;
+
+    @PrePersist
+    @PostLoad
+    void markNotNew() { this.isNew = false; }
+}
+```
+
+All JPA entity classes in the domain modules extend this superclass. The `isNew` transient flag (set to `false` on `@PostLoad` and `@PrePersist`) enables Spring Data's `Persistable` contract without overriding `equals`/`hashCode`, which avoids known OpenJPA identity issues. The generic parameter `T` is always `Long` in practice.
+
+### AbstractAuditableCustom / AbstractAuditableWithUTCDateTimeCustom
+
+These two classes in `org.apache.fineract.infrastructure.core.domain` extend `AbstractPersistableCustom` and add `createdBy`, `createdDate`, `lastModifiedBy`, and `lastModifiedDate` auditing fields. The UTC variant stores all timestamps as `OffsetDateTime` normalised to UTC.
+
+### ExternalId
+
+```java
+// org.apache.fineract.infrastructure.core.domain.ExternalId
+@Getter @EqualsAndHashCode
+public class ExternalId implements Serializable {
+    private final String value;
+
+    public static ExternalId generate() {
+        return new ExternalId(UUID.randomUUID().toString());
+    }
+
+    public static ExternalId empty() { return empty; }
+
+    public boolean isEmpty() { return value == null; }
+
+    public void throwExceptionIfEmpty() {
+        if (isEmpty()) throw new PlatformInternalServerException(...);
+    }
+}
+```
+
+`ExternalId` is a value object used throughout API resources and entity models to allow callers to assign their own string identifiers (typically UUIDs) for resources, decoupling the external reference from the auto-generated database ID. APIs accept both `id` (internal `Long`) and `externalId` via `IdTypeResolver`.
+
+### FineractPlatformTenant and FineractPlatformTenantConnection
+
+These immutable records (in `org.apache.fineract.infrastructure.core.domain`) describe a registered tenant:
+
+```java
+public class FineractPlatformTenant implements Serializable {
+    private final Long id;
+    private final String tenantIdentifier;   // e.g. "default"
+    private final String name;
+    private final String timezoneId;
+    private final FineractPlatformTenantConnection connection;
+}
+```
+
+`FineractPlatformTenantConnection` carries the per-tenant JDBC coordinates: `schemaServer`, `schemaServerPort`, `schemaName`, `schemaUsername`, `schemaPassword`, read-only replicas, HikariCP pool settings, and a `masterPasswordHash` used by `TenantDataSourceFactory` to validate the encryption master password before decrypting stored credentials.
+
+## Batch API Subsystem
+
+The `org.apache.fineract.batch` package implements the HTTP Batch API. See [Batch API](./batch-api) for the full reference. Key classes:
+
+| Class | Role |
+|---|---|
+| `BatchApiResource` | JAX-RS resource at `POST /api/v1/batches` |
+| `BatchRequest` | Input DTO: `requestId`, `method`, `relativeUrl`, `headers`, `reference`, `body` |
+| `BatchResponse` | Output DTO: `requestId`, `statusCode`, `headers`, `body` |
+| `BatchApiService` / `BatchApiServiceImpl` | Orchestrates execution of request trees |
+| `ResolutionHelper` | Builds dependency tree; resolves `$.param` JSONPath cross-references |
+| `CommandStrategy` | Per-endpoint strategy interface executed for each sub-request |
+| `CommandStrategyProvider` | Selects the right `CommandStrategy` by HTTP method + URL |
+
+## Legacy Command Subsystem (fineract-core/commands)
+
+The `org.apache.fineract.commands` package contains the original, still-active command infrastructure used by all existing domain APIs:
+
+### @CommandType Annotation
+
+```java
+// org.apache.fineract.commands.annotation.CommandType
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.TYPE)
+public @interface CommandType {
+    String entity();   // e.g. "CLIENT", "LOANPRODUCT"
+    String action();   // e.g. "CREATE", "DISBURSE"
+}
+```
+
+Handler classes annotate themselves with `@CommandType` to self-register with `CommandHandlerProvider`. The provider resolves the handler at runtime by matching the `CommandWrapper`'s entity name and action.
+
+### CommandWrapper and CommandWrapperBuilder
+
+`CommandWrapper` is an immutable descriptor of a write operation: entity name, action, entity ID, sub-entity ID, group/client/loan/savings IDs, JSON payload, idempotency key, and the permission name required to execute it. `CommandWrapperBuilder` (in `org.apache.fineract.commands.service`) provides a fluent API with hundreds of named factory methods for every action across every entity type (e.g. `.createClient()`, `.disburseLoan(loanId)`, `.approveShares(accountId)`).
+
+### CommandSource
+
+`CommandSource` is the JPA entity persisted to the `m_maker_checker_audit` table in the tenant database. It records the initiating user, the command JSON payload, execution timestamps, and processing status. This is the audit trail for every write operation in the system.
+
+### NewCommandSourceHandler
+
+```java
+// org.apache.fineract.commands.handler.NewCommandSourceHandler
+public interface NewCommandSourceHandler {
+    CommandProcessingResult processCommand(JsonCommand command);
+}
+```
+
+All domain write operations implement this interface. The handler receives a `JsonCommand` (wrapping the raw JSON body and its parsed `JsonElement` along with path parameters) and returns a `CommandProcessingResult` containing the saved entity ID, external ID, and transaction ID.
+
+### CommandProcessingResult and CommandProcessingResultBuilder
+
+`CommandProcessingResult` (in `org.apache.fineract.infrastructure.core.data`) is the standard response from every command handler. Built via `CommandProcessingResultBuilder`, it carries:
+
+- `commandId` — the `m_maker_checker_audit` row ID
+- `resourceId` — the affected entity's database ID
+- `resourceExternalId` — the `ExternalId` if set
+- `officeId`, `groupId`, `clientId`, `loanId`, `savingsId` — related entity IDs
+- `transactionId` — for transaction-typed resources
+- `rollbackTransaction` — signals maker-checker pending state
+
+## Utility Infrastructure
+
+<CardGroup cols={2}>
+  <Card title="ThreadLocalContextUtil" icon="thread">
+    Manages per-request `ThreadLocal` state: current `FineractPlatformTenant`, data-source context string, auth token, business dates, and action context. See [Multi-Tenancy](./multi-tenancy).
+  </Card>
+  <Card title="JsonCommand" icon="braces">
+    `org.apache.fineract.infrastructure.core.api.JsonCommand` — wraps a raw JSON string alongside its parsed `JsonElement` tree and entity/sub-entity IDs extracted from URL path parameters. Passed to every `NewCommandSourceHandler`.
+  </Card>
+  <Card title="DataValidatorBuilder" icon="check">
+    `org.apache.fineract.infrastructure.core.data.DataValidatorBuilder` — fluent builder for collecting API parameter validation errors and throwing a `PlatformApiDataValidationException` if any errors are present.
+  </Card>
+  <Card title="ApiParameterHelper" icon="sliders">
+    `org.apache.fineract.infrastructure.core.api.ApiParameterHelper` — parses query parameters used across read APIs: `associations`, `fields`, `offset`, `limit`, `orderBy`, `sortOrder`.
+  </Card>
+</CardGroup>
