@@ -192,12 +192,12 @@ When a transaction is reversed, the API posts new CREDIT entries for each origin
 
 ## Accounting Closures
 
-`GLClosure` (table: `acc_gl_closures`) prevents backdated entries into completed accounting periods.
+`GLClosure` (table: `acc_gl_closure`) prevents backdated entries into completed accounting periods.
 
 ```java
 // org.apache.fineract.accounting.closure.domain.GLClosure
 @Entity
-@Table(name = "acc_gl_closures")
+@Table(name = "acc_gl_closure")
 public class GLClosure extends AbstractAuditableWithUTCDateTimeCustom<Long> {
     // office, closingDate, comments
 }
@@ -219,12 +219,12 @@ public class GLClosure extends AbstractAuditableWithUTCDateTimeCustom<Long> {
 
 ## Trial Balance
 
-The `TrialBalance` entity (table: `acc_trial_balance_detail`) stores pre-computed debit and credit totals per GL account per period. It is populated by the `UpdateTrialBalanceDetailsTasklet` Spring Batch job in `org.apache.fineract.accounting.glaccount.jobs.updatetrialbalancedetails`.
+The `TrialBalance` entity (table: `m_trial_balance`) stores pre-computed debit and credit totals per GL account per period. It is populated by the `UpdateTrialBalanceDetailsTasklet` Spring Batch job in `org.apache.fineract.accounting.glaccount.jobs.updatetrialbalancedetails`.
 
 ```java
 // org.apache.fineract.accounting.glaccount.domain.TrialBalance
 @Entity
-@Table(name = "acc_trial_balance_detail")
+@Table(name = "m_trial_balance")
 public class TrialBalance extends AbstractPersistableCustom<Long> {
     // glAccount, office, closingBalance, debitCount, creditCount,
     // createdDate, closingBalance type

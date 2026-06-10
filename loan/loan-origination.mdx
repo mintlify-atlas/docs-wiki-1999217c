@@ -14,7 +14,7 @@ The entire module is guarded by a Spring Boot conditional property:
 fineract.module.loan-origination.enabled=true
 ```
 
-When set to `true`, all `@ConditionalOnProperty`-annotated beans are registered. When `false` (the default), the core `fineract-loan` module uses `LoanOriginatorLinkingServiceNoOp` — a no-operation implementation of `LoanOriginatorLinkingService` — so the loan creation flow is completely unaffected.
+When set to `true` (the default), all `@ConditionalOnProperty`-annotated beans are registered. When `false`, the core `fineract-loan` module uses `LoanOriginatorLinkingServiceNoOp` — a no-operation implementation of `LoanOriginatorLinkingService` — so the loan creation flow is completely unaffected.
 
 ## Domain Model
 

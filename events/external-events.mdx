@@ -12,7 +12,7 @@ The framework has two layers that complement each other.
 
 **Business events** are Spring `ApplicationEvent` subclasses raised synchronously inside a service method. Every business event extends `AbstractBusinessEvent<T>` (package `org.apache.fineract.infrastructure.event.business.domain`) and carries a typed domain object via `get()`. They exist purely inside the JVM and are never serialised on their own.
 
-**External events** are the durable, transport-ready representation. `ExternalEventService` (package `org.apache.fineract.infrastructure.event.external.service`) converts a business event into an `ExternalEvent` JPA entity and persists it. A background publisher thread then reads those rows and hands them off to whichever `ExternalEventProducer` is configured.
+**External events** are the durable, transport-ready representation. `ExternalEventService` (package `org.apache.fineract.infrastructure.event.external.service`, module `fineract-core`) converts a business event into an `ExternalEvent` JPA entity and persists it. A background publisher thread then reads those rows and hands them off to whichever `ExternalEventProducer` is configured.
 
 <CardGroup cols={2}>
   <Card title="AbstractBusinessEvent" icon="bolt">
@@ -53,7 +53,7 @@ repository.save(new ExternalEvent(eventType, eventCategory, schema, data, idempo
 
 <Tabs>
   <Tab title="Loan events">
-    Events in package `org.apache.fineract.infrastructure.event.business.domain.loan` (fineract-loan module):
+    Events in package `org.apache.fineract.infrastructure.event.business.domain.loan` and its sub-packages (`charge`, `repayment`, `transaction`, `reaging`, `reamortization`) — all in the `fineract-loan` module:
 
     | Class | Description |
     |---|---|

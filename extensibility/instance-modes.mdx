@@ -55,10 +55,10 @@ private static final List<ExceptionListItem> EXCEPTION_LIST = List.of(
 ```
 
 The filter logic:
-1. Always allows paths on the exception list (actuator, `/v1/instance-mode`, `/v1/batches`).
-2. Rejects requests to batch-manager paths if `batchManagerEnabled = false`.
-3. For all other paths: allows if `readEnabled = true` AND request is a GET/HEAD, or if `writeEnabled = true`.
-4. Returns HTTP 405 for rejected requests.
+1. If the request path is on the exception list **and** the corresponding mode flag is `true` (e.g. `isBatchManagerEnabled` for `/v1/jobs`), **or** the path is unconditionally excepted (`/v1/instance-mode`, `/v1/batches`), **or** the request targets `/actuator/*` — the request is allowed through.
+2. If the path is on the exception list but the corresponding mode flag is `false` (e.g. `/v1/jobs` when `batchManagerEnabled = false`), the request is rejected with HTTP 405.
+3. For all other paths: allowed if `readEnabled = true` and the request method is `GET`, or if `writeEnabled = true`.
+4. All other requests return HTTP 405.
 
 ## Runtime Mode Switching API
 

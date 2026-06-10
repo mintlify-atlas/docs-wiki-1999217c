@@ -44,44 +44,55 @@ Fineract's datatable system allows operators to define custom tables that extend
 The `RegisteredDatatable` JPA entity maps to the `x_registered_table` database table:
 
 ```java RegisteredDatatable.java (key fields)
+@Getter
+@Setter
+@AllArgsConstructor
 @Entity
 @Table(name = "x_registered_table")
-public class RegisteredDatatable {
-    @Column(name = "registered_table_name")
-    private String registeredTableName;
+public class RegisteredDatatable extends AbstractPersistableCustom<Long> {
 
-    @Column(name = "application_table_name")
-    private String applicationTableName;  // e.g. "m_loan", "m_client"
+    @Column(name = "registered_table_name", nullable = false)
+    private String datatableName;
 
-    @Column(name = "display_name")
-    private String displayName;
+    @Column(name = "application_table_name", nullable = false)
+    private String entity;           // e.g. "m_loan", "m_client"
 
-    @Column(name = "multirow_allowed")
-    private boolean multirowAllowed;  // whether multiple rows per entity are allowed
+    @Column(name = "entity_subtype", nullable = true)
+    private String subtype;
+
+    @Column(name = "category", nullable = false)
+    private int category;
 }
 ```
 
-The `applicationTableName` field links the datatable to a core entity. Valid values include `m_loan`, `m_client`, `m_group`, `m_savings_account`, `m_office`, and others.
+The `entity` field links the datatable to a core entity table. Valid values include `m_loan`, `m_client`, `m_group`, `m_savings_account`, `m_office`, and others.
 
 ## Entity Datatable Checks
 
 `EntityDatatableChecks` (table `m_entity_datatable_check`) allows you to make a datatable required at a specific entity lifecycle event:
 
 ```java EntityDatatableChecks.java (key fields)
+@AllArgsConstructor
+@NoArgsConstructor
+@Getter
 @Entity
 @Table(name = "m_entity_datatable_check")
-public class EntityDatatableChecks {
-    @Column(name = "application_table_name")
-    private String entityName;        // e.g. "m_loan"
+public class EntityDatatableChecks extends AbstractPersistableCustom<Long> {
 
-    @Column(name = "entity_status")
-    private Long status;              // 100=SUBMITTED, 300=ACTIVE, etc.
+    @Column(name = "application_table_name", nullable = false)
+    private String entity;            // e.g. "m_loan", "m_client"
 
-    @Column(name = "datatableName")
+    @Column(name = "x_registered_table_name", nullable = false)
     private String datatableName;
+
+    @Column(name = "status_enum", nullable = false)
+    private Integer status;           // e.g. 100=SUBMITTED, 300=ACTIVE
 
     @Column(name = "system_defined")
     private boolean systemDefined;
+
+    @Column(name = "product_id", nullable = true)
+    private Long productId;
 }
 ```
 

@@ -14,9 +14,9 @@ fineract-provider/src/main/java/org/apache/fineract/infrastructure/hooks/
 ├── data/         # HookData, HookCreateRequest, HookCreateResponse
 ├── domain/       # Hook, HookTemplate, HookResource, HookConfiguration, HookSchema
 ├── handler/      # Command handlers for CRUD
-├── listener/     # HookEventListener (dispatches after write commands)
-├── mapper/       # HookMapper
-└── processor/    # WebHookProcessor, JmsHookProcessor
+├── listener/     # FineractHookListener (implements HookListener; dispatches after write commands)
+├── mapper/       # HookEventMapper, HookFieldMapper
+└── processor/    # WebHookProcessor, ElasticSearchHookProcessor, TwilioHookProcessor, HookProcessorProvider
 ```
 
 ## Domain Model
@@ -127,19 +127,19 @@ Hooks fire on `{entityName}/{actionName}` combinations. Standard entity names in
 ```mermaid
 sequenceDiagram
     participant CMD as CommandProcessingService
-    participant LISTENER as HookEventListener
-    participant SVC as HookWritePlatformService
+    participant LISTENER as FineractHookListener
+    participant SVC as HookReadPlatformService
     participant PROC as WebHookProcessor
 
     CMD->>CMD: execute write command
-    CMD->>LISTENER: publishEvent(HookEvent)
-    LISTENER->>SVC: processHooks(entityName, actionName, payload)
-    SVC->>SVC: findHooks(entityName, actionName)
-    SVC->>PROC: process(hook, payload)
+    CMD->>LISTENER: onApplicationEvent(HookEvent)
+    LISTENER->>SVC: findHooksByEvent(entityName, actionName)
+    LISTENER->>LISTENER: for each matching hook
+    LISTENER->>PROC: process(hook, payload, appUser, tenantId)
     PROC->>PROC: HTTP POST to Payload URL
 ```
 
-The `HookEventListener` receives a Spring `ApplicationEvent` after each write command completes. It looks up all hooks registered for the fired entity+action pair and dispatches each one asynchronously via the appropriate `HookProcessor`.
+`FineractHookListener` implements the `HookListener` interface (`ApplicationListener<HookEvent>`) and receives a `HookEvent` after each write command completes. It looks up all hooks registered for the fired entity+action pair via `HookReadPlatformService` and dispatches each one via the appropriate `HookProcessor` (resolved by `HookProcessorProvider`).
 
 <Note>
 Hooks fire after the transaction commits. If the HTTP endpoint is unavailable, the delivery is not retried by default — hooks are fire-and-forget. For reliable delivery, use the External Events system with Kafka instead.

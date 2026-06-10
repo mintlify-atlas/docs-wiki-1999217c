@@ -44,7 +44,19 @@ The full enum (value in parentheses):
 
 ### Sub-status
 
-Beyond the primary status, `SavingsAccount` tracks a `sub_status_enum` column corresponding to `SavingsAccountSubStatusEnum` (values include `NONE`, `INACTIVE`, `DORMANT`). An account that becomes dormant due to inactivity has its sub-status updated; posting a transaction resets it back to `NONE`.
+Beyond the primary status, `SavingsAccount` tracks a `sub_status_enum` column corresponding to `SavingsAccountSubStatusEnum` (in `org.apache.fineract.portfolio.savings.domain`, fineract-core):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `NONE` | 0 | Normal active state |
+| `INACTIVE` | 100 | Account has had no transactions for the configured inactivity period |
+| `DORMANT` | 200 | Account has been inactive beyond the dormancy threshold |
+| `ESCHEAT` | 300 | Account funds escheated to the government |
+| `BLOCK` | 400 | Full account block (no debits or credits) |
+| `BLOCK_CREDIT` | 500 | Credits blocked only |
+| `BLOCK_DEBIT` | 600 | Debits blocked only |
+
+An account that becomes dormant due to inactivity has its sub-status updated; posting a transaction resets it back to `NONE`.
 
 ## SavingsAccount Domain Entity
 
@@ -102,6 +114,12 @@ Every monetary movement is captured as a `SavingsAccountTransaction` persisted t
 | `WAIVE_CHARGES` | 6 | — | Charge waived (no balance change) |
 | `PAY_CHARGE` | 7 | DEBIT | Charge paid |
 | `DIVIDEND_PAYOUT` | 8 | CREDIT | Dividend credited from share account |
+| `ACCRUAL` | 10 | — | Interest accrual (no immediate balance change) |
+| `INITIATE_TRANSFER` | 12 | — | Account transfer initiated |
+| `APPROVE_TRANSFER` | 13 | — | Account transfer approved |
+| `WITHDRAW_TRANSFER` | 14 | — | Account transfer withdrawn |
+| `REJECT_TRANSFER` | 15 | — | Account transfer rejected |
+| `WRITTEN_OFF` | 16 | — | Account written off |
 | `OVERDRAFT_INTEREST` | 17 | DEBIT | Interest charged on overdraft balance |
 | `WITHHOLD_TAX` | 18 | DEBIT | Withholding tax deducted |
 | `ESCHEAT` | 19 | DEBIT | Account escheat (no balance change) |

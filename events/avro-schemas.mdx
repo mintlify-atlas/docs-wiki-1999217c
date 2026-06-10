@@ -21,6 +21,9 @@ fineract-avro-schemas/
     ├── gl/v1/
     ├── group/v1/
     ├── loan/v1/
+    ├── office/v1/
+    ├── payment/v1/
+    ├── portfolio/v1/
     ├── recurringdeposit/v1/
     ├── savings/v1/
     ├── share/v1/
@@ -95,9 +98,12 @@ Savings account snapshots and transaction records for savings business events.
 | `group/v1/` | `GroupGeneralDataV1`, `GroupRoleDataV1` |
 | `document/v1/` | `DocumentDataV1` |
 | `gl/v1/` | `GLAccountDataV1` |
-| `share/v1/` | Share account data |
-| `workingcapitalloan/v1/` | Working capital loan data |
-| `generic/v1/` | `CommandProcessingResultV1`, `CurrencyDataV1`, `EnumOptionDataV1`, `CalendarDataV1`, `CodeValueDataV1` |
+| `office/v1/` | `OfficeDataV1` |
+| `payment/v1/` | `PaymentDetailDataV1`, `PaymentTypeDataV1` |
+| `portfolio/v1/` | `ChargeDataV1`, `PortfolioAccountDataV1`, `RateDataV1` |
+| `share/v1/` | `ShareAccountDataV1`, `ShareProductDataV1`, `ShareAccountTransactionDataV1` |
+| `workingcapitalloan/v1/` | `WorkingCapitalLoanTransactionDataV1` |
+| `generic/v1/` | `CommandProcessingResultV1`, `CurrencyDataV1`, `EnumOptionDataV1`, `CalendarDataV1`, `CodeValueDataV1`, `StringEnumOptionDataV1` |
 
 ## Code Generation
 
@@ -149,6 +155,12 @@ Each mapper uses MapStruct or hand-written mapping to convert the Fineract `Data
 
 Serializers live at:
 ```
+fineract-core/src/main/java/org/apache/fineract/infrastructure/event/
+  external/service/serialization/serializer/
+    BusinessEventSerializer.java      # interface
+    AbstractBusinessEventWithCustomDataSerializer.java  # optional base class
+    BusinessEventSerializerFactory.java
+
 fineract-provider/src/main/java/org/apache/fineract/infrastructure/event/
   external/service/serialization/serializer/
     loan/
@@ -157,11 +169,11 @@ fineract-provider/src/main/java/org/apache/fineract/infrastructure/event/
     ...
 ```
 
-Each serializer is an `AbstractBusinessEventSerializer` implementation that:
-1. Accepts the business event type it handles.
-2. Calls the mapper to get the Avro payload.
-3. Wraps the payload in `MessageV1` with the `dataschema` field set to the payload's Avro namespace + name.
-4. Returns the final serialized bytes.
+Each serializer implements the `BusinessEventSerializer` interface and:
+1. Declares which business event types it can handle via `canSerialize(event)`.
+2. Calls the mapper to get the Avro payload via `toAvroDTO(event)`.
+3. Declares the target Avro schema class via `getSupportedSchema()`.
+4. The `ExternalEventService` wraps the payload in the `MessageV1` envelope and persists the serialized bytes.
 
 ## BulkMessagePayloadV1
 

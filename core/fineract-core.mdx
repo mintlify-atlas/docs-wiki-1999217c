@@ -149,7 +149,7 @@ Handler classes annotate themselves with `@CommandType` to self-register with `C
 
 ### CommandSource
 
-`CommandSource` is the JPA entity persisted to the `m_maker_checker_audit` table in the tenant database. It records the initiating user, the command JSON payload, execution timestamps, and processing status. This is the audit trail for every write operation in the system.
+`CommandSource` is the JPA entity persisted to the `m_portfolio_command_source` table in the tenant database. It records the initiating user, the command JSON payload, execution timestamps, and processing status. This is the audit trail for every write operation in the system.
 
 ### NewCommandSourceHandler
 
@@ -166,7 +166,7 @@ All domain write operations implement this interface. The handler receives a `Js
 
 `CommandProcessingResult` (in `org.apache.fineract.infrastructure.core.data`) is the standard response from every command handler. Built via `CommandProcessingResultBuilder`, it carries:
 
-- `commandId` — the `m_maker_checker_audit` row ID
+- `commandId` — the `m_portfolio_command_source` row ID
 - `resourceId` — the affected entity's database ID
 - `resourceExternalId` — the `ExternalId` if set
 - `officeId`, `groupId`, `clientId`, `loanId`, `savingsId` — related entity IDs

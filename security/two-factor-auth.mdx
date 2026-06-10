@@ -4,7 +4,7 @@ sidebarTitle: "Two-Factor Auth"
 description: "Enable and configure Fineract's 2FA layer: OTP generation via RandomOTPGenerator, TFAccessToken lifecycle, delivery methods, and the /api/v1/twofactor endpoints."
 ---
 
-Apache Fineract's two-factor authentication (2FA) feature adds a second verification step on top of HTTP Basic Auth, requiring users to prove possession of a registered delivery channel (email or SMS) in addition to their password. The feature is implemented entirely within the `fineract-security` module and is fully optional — it activates only when `fineract.security.2fa.enabled=true`. When active, every protected API endpoint requires the `Fineract-Platform-TFA-Token` request header in addition to the standard `Authorization: Basic …` header, except for endpoints that only require fully-authenticated access (such as `POST /api/v1/twofactor` itself).
+Apache Fineract's two-factor authentication (2FA) feature adds a second verification step on top of the primary authentication method (Basic Auth or OAuth2), requiring users to prove possession of a registered delivery channel (email or SMS) in addition to their password. The feature is implemented entirely within the `fineract-security` module and is fully optional — it activates only when `fineract.security.2fa.enabled=true`. When active, every protected API endpoint requires the `Fineract-Platform-TFA-Token` request header in addition to the primary credentials, except for the 2FA-management endpoints themselves which only require `fullyAuthenticated()` status (such as `POST /api/v1/twofactor`).
 
 ## Enabling 2FA
 
@@ -20,7 +20,7 @@ export FINERACT_SECURITY_2FA_ENABLED=true
 ```
 
 <Note>
-  2FA is only supported in Basic Auth mode (`fineract.security.basicauth.enabled=true`). When OAuth2 mode is active, the `TwoFactorApiResource` bean is still conditionally registered, but the filter integration is specific to the Basic Auth `SecurityConfig` and `AuthorizationServerConfig` classes.
+  2FA is supported in both Basic Auth mode and OAuth2 mode. When `fineract.security.2fa.enabled=true`, both `SecurityConfig` (Basic Auth) and `AuthorizationServerConfig` (OAuth2) add `TwoFactorAuthenticationFilter` to their respective filter chains and require the `TWOFACTOR_AUTHENTICATED` authority on protected endpoints.
 </Note>
 
 When enabled, two things happen at startup:
@@ -74,7 +74,9 @@ This `GenericFilterBean` runs after the primary authentication filter. Its logic
 
 1. If the `SecurityContext` contains an authenticated `AppUser`, proceed.
 2. If the user has the `BYPASS_TWOFACTOR` permission (`TwoFactorConstants.BYPASS_TWO_FACTOR_PERMISSION`), skip OTP validation and immediately grant the `TWOFACTOR_AUTHENTICATED` authority.
-3. Otherwise, read the `Fineract-Platform-TFA-Token` header. If present, call `TwoFactorService.fetchAccessTokenForUser()`. If the returned `TFAccessToken` is `null` or `!isValid()`, return HTTP 401.
+3. Otherwise, read the `Fineract-Platform-TFA-Token` header.
+   - If the header is **present but invalid** (token not found or `!isValid()`), the filter immediately returns HTTP 401.
+   - If the header is **absent**, the filter passes the request to the next filter without adding `TWOFACTOR_AUTHENTICATED`. Spring Security's authorization check (`hasAuthority("TWOFACTOR_AUTHENTICATED")`) then blocks the request with HTTP 403.
 4. If the token is valid, add `TWOFACTOR_AUTHENTICATED` as a `SimpleGrantedAuthority` and update the `SecurityContext` with a new `UsernamePasswordAuthenticationToken` or `FineractJwtAuthenticationToken`.
 
 ```java
@@ -83,11 +85,18 @@ if (!user.hasSpecificPermissionTo(TwoFactorConstants.BYPASS_TWO_FACTOR_PERMISSIO
     String token = request.getHeader("Fineract-Platform-TFA-Token");
     if (token != null) {
         TFAccessToken accessToken = twoFactorService.fetchAccessTokenForUser(user, token);
+        // Token is present but non-existent or expired → 401
         if (accessToken == null || !accessToken.isValid()) {
+            response.addHeader("WWW-Authenticate", "Basic realm=\"Fineract Platform API Two Factor\"");
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
                 "Invalid two-factor access token provided");
             return;
         }
+    } else {
+        // No token header provided — pass through without TWOFACTOR_AUTHENTICATED.
+        // The downstream authority check will return 403.
+        chain.doFilter(req, res);
+        return;
     }
 }
 List<GrantedAuthority> updatedAuthorities = new ArrayList<>(authentication.getAuthorities());

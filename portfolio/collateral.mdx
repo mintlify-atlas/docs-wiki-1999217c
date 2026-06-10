@@ -10,7 +10,7 @@ Apache Fineract provides two distinct but complementary collateral systems. The 
 
 ### Overview
 
-The legacy system lives in `org.apache.fineract.portfolio.collateral` (package `fineract-provider`) and attaches collateral directly to a loan. It is a lightweight record consisting of:
+The legacy system lives in `org.apache.fineract.portfolio.collateral` (the `LoanCollateral` entity is in `fineract-loan`; the API and service layers are in `fineract-provider`) and attaches collateral directly to a loan. It is a lightweight record consisting of:
 
 - **type** — a `CodeValue` from the `LoanCollateral` code set (configurable, e.g., "Gold Jewellery", "Land Title Deed")
 - **value** — monetary value of the collateral item

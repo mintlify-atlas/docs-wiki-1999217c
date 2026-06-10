@@ -145,21 +145,22 @@ The mapping system is implemented through a set of helper classes in `org.apache
     // org.apache.fineract.accounting.producttoaccountmapping.service
     //    .ProductToGLAccountMappingHelper
     public void saveProductToAccountMapping(
-        JsonElement element, String paramName,
-        Long productId, int placeHolderTypeId,
-        GLAccountType expectedAccountType,
-        PortfolioProductType portfolioProductType) {
+        final JsonElement element, final String paramName,
+        final Long productId, final int placeHolderTypeId,
+        final GLAccountType expectedAccountType,
+        final PortfolioProductType portfolioProductType) {
 
-        final Long accountId = fromApiJsonHelper.extractLongNamed(paramName, element);
-        final GLAccount glAccount = getAccountByIdAndType(paramName, expectedAccountType, accountId);
+        final Long accountId = this.fromApiJsonHelper.extractLongNamed(paramName, element);
+        if (accountId != null) { // optional entries may be null
+            final GLAccount glAccount = getAccountByIdAndType(paramName, expectedAccountType, accountId);
 
-        final ProductToGLAccountMapping mapping = new ProductToGLAccountMapping()
-            .setGlAccount(glAccount)
-            .setProductId(productId)
-            .setProductType(portfolioProductType.getValue())
-            .setFinancialAccountType(placeHolderTypeId);
-
-        accountMappingRepository.saveAndFlush(mapping);
+            final ProductToGLAccountMapping accountMapping = new ProductToGLAccountMapping()
+                .setGlAccount(glAccount)
+                .setProductId(productId)
+                .setProductType(portfolioProductType.getValue())
+                .setFinancialAccountType(placeHolderTypeId);
+            this.accountMappingRepository.saveAndFlush(accountMapping);
+        }
     }
     ```
   </Tab>
@@ -218,7 +219,8 @@ public interface ProductToGLAccountMappingWritePlatformService {
 
     Map<String, Object> updateLoanProductToGLAccountMapping(
         Long loanProductId, JsonCommand command, boolean accountingRuleChanged,
-        AccountingRuleType accountingRuleTypeId, ...);
+        AccountingRuleType accountingRuleTypeId, boolean enableIncomeCapitalization,
+        boolean enableBuyDownFee, boolean merchantBuyDownFee);
 
     Map<String, Object> updateSavingsProductToGLAccountMapping(
         Long savingsProductId, JsonCommand command, boolean accountingRuleChanged,
@@ -226,7 +228,9 @@ public interface ProductToGLAccountMappingWritePlatformService {
 
     void createShareProductToGLAccountMapping(Long shareProductId, JsonCommand command);
 
-    Map<String, Object> updateShareProductToGLAccountMapping(...);
+    Map<String, Object> updateShareProductToGLAccountMapping(
+        Long shareProductId, JsonCommand command, boolean accountingRuleChanged,
+        int accountingRuleTypeId);
 }
 ```
 
@@ -274,9 +278,9 @@ A typical cash-based loan product requires these mandatory mappings:
 |---|---|---|
 | `fundSourceAccountId` | `FUND_SOURCE (1)` | ASSET |
 | `loanPortfolioAccountId` | `LOAN_PORTFOLIO (2)` | ASSET |
-| `interestOnLoansAccountId` | `INTEREST_ON_LOANS (3)` | INCOME |
-| `incomeFromFeesAccountId` | `INCOME_FROM_FEES (4)` | INCOME |
-| `incomeFromPenaltiesAccountId` | `INCOME_FROM_PENALTIES (5)` | INCOME |
+| `interestOnLoanAccountId` | `INTEREST_ON_LOANS (3)` | INCOME |
+| `incomeFromFeeAccountId` | `INCOME_FROM_FEES (4)` | INCOME |
+| `incomeFromPenaltyAccountId` | `INCOME_FROM_PENALTIES (5)` | INCOME |
 | `writeOffAccountId` | `LOSSES_WRITTEN_OFF (6)` | EXPENSE |
 | `transfersInSuspenseAccountId` | `TRANSFERS_SUSPENSE (10)` | ASSET |
 | `overpaymentLiabilityAccountId` | `OVERPAYMENT (11)` | LIABILITY |

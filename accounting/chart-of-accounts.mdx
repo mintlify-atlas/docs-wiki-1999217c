@@ -143,14 +143,19 @@ A typical chart of accounts hierarchy:
 
 ```java
 // org.apache.fineract.accounting.glaccount.domain.GLAccountRepositoryWrapper
-@Component
-@RequiredArgsConstructor
+@Service
 public class GLAccountRepositoryWrapper {
+
     private final GLAccountRepository repository;
 
-    public GLAccount findOneWithNotFoundDetection(final Long glAccountId) {
-        return repository.findById(glAccountId)
-            .orElseThrow(() -> new GLAccountNotFoundException(glAccountId));
+    @Autowired
+    public GLAccountRepositoryWrapper(final GLAccountRepository repository) {
+        this.repository = repository;
+    }
+
+    public GLAccount findOneWithNotFoundDetection(final Long id) {
+        return this.repository.findById(id)
+            .orElseThrow(() -> new GLAccountNotFoundException(id));
     }
 }
 ```

@@ -274,7 +274,7 @@ public CommandProcessingResult logCommandSource(CommandWrapper wrapper) {
 `SynchronousCommandProcessingService.executeCommand()` performs:
 
 1. **Idempotency check** — if a `CommandSource` with the same idempotency key already exists in `PROCESSED` state, return its stored result without re-executing.
-2. **Command source persistence** — inserts a `CommandSource` record in `m_maker_checker_audit` with status `UNDER_PROCESSING`.
+2. **Command source persistence** — inserts a `CommandSource` record in `m_portfolio_command_source` with status `UNDER_PROCESSING`.
 3. **Handler dispatch** — looks up the `NewCommandSourceHandler` via `CommandHandlerProvider` using `(entity, action)`, invokes `handler.processCommand(jsonCommand)`.
 4. **Result persistence** — updates `CommandSource` to `PROCESSED` with execution timestamp.
 5. **Maker-checker rollback** — if maker-checker is enabled and the command is not yet approved, rolls back the DB transaction but retains the `CommandSource` in `AWAITING_APPROVAL` state.
@@ -289,7 +289,7 @@ sequenceDiagram
     participant SCPS as SynchronousCommandProcessingService
     participant HP as CommandHandlerProvider
     participant Handler as NewCommandSourceHandler impl
-    participant Audit as m_maker_checker_audit
+    participant Audit as m_portfolio_command_source
 
     Client->>Resource: POST /api/v1/clients
     Resource->>Port: logCommandSource(CommandWrapper)
@@ -312,7 +312,7 @@ sequenceDiagram
 When maker-checker is enabled for a permission, the following applies:
 
 - On the **maker's** request: the transaction is rolled back but the `CommandSource` record remains in `AWAITING_APPROVAL` state.
-- A **checker** (different user with checker permission) calls `approveEntry(commandSourceId)` on `PortfolioCommandSourceWritePlatformService`, which re-executes the persisted `CommandAsJson` with `isApprovedByChecker = true`, bypassing the rollback.
+- A **checker** (different user with checker permission) calls `approveEntry(commandSourceId)` on `PortfolioCommandSourceWritePlatformService`, which re-executes the persisted `CommandSource` JSON payload with `isApprovedByChecker = true`, bypassing the rollback.
 - The checker can alternatively call `rejectEntry(commandSourceId)` to mark the `CommandSource` as rejected and trigger any registered `CleanupService` implementations.
 
 The same-maker-checker restriction (`configurationService.isSameMakerCheckerEnabled()`) prevents a maker from approving their own commands unless explicitly enabled.

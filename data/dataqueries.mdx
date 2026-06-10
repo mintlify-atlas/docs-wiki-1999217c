@@ -58,6 +58,9 @@ Every custom table is registered in the `x_registered_table` database table, whi
 
 ```java
 // RegisteredDatatable.java
+@Getter
+@Setter
+@AllArgsConstructor
 @Entity
 @Table(name = "x_registered_table")
 public class RegisteredDatatable extends AbstractPersistableCustom<Long> {

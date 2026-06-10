@@ -15,7 +15,7 @@ These modules form the irreducible nucleus of the platform. All other modules de
 | `fineract-core` | Lowest-common dependency. Exports base domain classes, infrastructure utilities, tenant model, Batch API, command domain, and `FineractProperties`. | `org.apache.fineract.infrastructure.core` · `org.apache.fineract.batch` · `org.apache.fineract.commands` |
 | `fineract-provider` | Assembly and bootstrap module. Contains `ServerApplication` (Spring Boot entry point), `FineractWebApplicationConfiguration`, and `FineractLiquibaseOnlyApplicationConfiguration`. | `org.apache.fineract` · `org.apache.fineract.infrastructure.core.boot` |
 | `fineract-security` | Spring Security configuration for HTTP Basic auth, OAuth2 resource server, two-factor authentication, platform security context, and CORS configuration. | `org.apache.fineract.infrastructure.security` |
-| `fineract-validation` | Shared validation utilities, `DataValidatorBuilder`, and `FineractValidationCondition` wiring. | `org.apache.fineract.infrastructure.core.data` |
+| `fineract-validation` | Jakarta Bean Validation constraint annotations and validators (e.g. `@DateFormat`, `@Locale`, `@EnumValue`) for use across domain modules. | `org.apache.fineract.validation.constraints` |
 | `fineract-cob` | Close-of-Business Spring Batch job configuration, business-date progression, inline COB loan processing, and partition management for remote execution. | `org.apache.fineract.cob` |
 
 ## Command System

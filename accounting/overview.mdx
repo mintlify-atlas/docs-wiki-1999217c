@@ -119,12 +119,12 @@ The `AccrualAccountingApiResource` (at `/api/v1/runaccruals`) triggers periodic 
 
 ## Period Closures
 
-`GLClosure` (table: `acc_gl_closures`) prevents journal entries from being backdated into a closed accounting period. `GLClosuresApiResource` at `/api/v1/glclosures` manages the create/update/delete lifecycle of closures per office.
+`GLClosure` (table: `acc_gl_closure`) prevents journal entries from being backdated into a closed accounting period. `GLClosuresApiResource` at `/api/v1/glclosures` manages the create/update/delete lifecycle of closures per office.
 
 ```java
 // org.apache.fineract.accounting.closure.domain.GLClosure
 @Entity
-@Table(name = "acc_gl_closures")
+@Table(name = "acc_gl_closure")
 public class GLClosure extends AbstractAuditableWithUTCDateTimeCustom<Long> {
     // closingDate, office, comments
 }
@@ -136,7 +136,7 @@ public class GLClosure extends AbstractAuditableWithUTCDateTimeCustom<Long> {
 
 ## Trial Balance
 
-The trial balance is maintained by the `UpdateTrialBalanceDetailsTasklet` (Spring Batch job in `org.apache.fineract.accounting.glaccount.jobs.updatetrialbalancedetails`). It aggregates journal entry debits and credits per GL account and stores summary rows in the `acc_trial_balance_detail` table (`TrialBalance` entity).
+The trial balance is maintained by the `UpdateTrialBalanceDetailsTasklet` (Spring Batch job in `org.apache.fineract.accounting.glaccount.jobs.updatetrialbalancedetails`). It aggregates journal entry debits and credits per GL account and stores summary rows in the `m_trial_balance` table (`TrialBalance` entity).
 
 ## Cross-Module Integration Points
 

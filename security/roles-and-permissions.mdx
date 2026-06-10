@@ -53,7 +53,11 @@ erDiagram
 **File:** `fineract-core/src/main/java/org/apache/fineract/useradministration/domain/AppUser.java`  
 **Table:** `m_appuser`
 
-`AppUser` extends Spring Security's `User` and implements `PlatformUser`. The critical security-relevant fields are:
+<Note>
+  `AppUser`, `Role`, and `Permission` live in the `fineract-core` module, not `fineract-provider`. The domain classes are shared across modules via the core artifact.
+</Note>
+
+`AppUser` extends `AbstractPersistableCustom<Long>` and implements `PlatformUser` (which itself extends Spring Security's `UserDetails`). The critical security-relevant fields are:
 
 ```java
 @Entity
@@ -275,12 +279,10 @@ public AppUser authenticatedUser() {
 // AppUser — shorthand helpers used in API resources and services
 public void validateHasReadPermission(final String resourceType) {
     validateHasPermission("READ", resourceType);
-    // Accepts: ALL_FUNCTIONS, ALL_FUNCTIONS_READ, or READ_<RESOURCETYPE>
 }
 
 public void validateHasCreatePermission(final String resourceType) {
     validateHasPermission("CREATE", resourceType);
-    // Accepts: ALL_FUNCTIONS, or CREATE_<RESOURCETYPE>
 }
 
 public void validateHasUpdatePermission(final String resourceType) {
@@ -291,6 +293,10 @@ public void validateHasDeletePermission(final String resourceType) {
     validateHasPermission("DELETE", resourceType);
 }
 
+// All four delegates share this implementation:
+// hasNotPermissionForAnyOf("ALL_FUNCTIONS", "ALL_FUNCTIONS_READ", matchPermission)
+// This means ALL_FUNCTIONS_READ satisfies every prefix — READ, CREATE, UPDATE, DELETE.
+
 public boolean hasSpecificPermissionTo(final String permissionCode) {
     // Checks explicit permission code (no ALL_FUNCTIONS fallback)
     for (final Role role : this.roles) {
@@ -299,6 +305,10 @@ public boolean hasSpecificPermissionTo(final String permissionCode) {
     return false;
 }
 ```
+
+<Note>
+  The private `validateHasPermission` helper always includes `"ALL_FUNCTIONS_READ"` in its authority check regardless of the action prefix. In practice this means a user with `ALL_FUNCTIONS_READ` can pass the service-layer `validateHasCreatePermission` / `validateHasUpdatePermission` / `validateHasDeletePermission` checks. The URL-level `SecurityConfig` matchers use `ALL_FUNCTIONS_WRITE` for write endpoints, providing the effective enforcement boundary.
+</Note>
 
 **Typical usage in an API resource:**
 

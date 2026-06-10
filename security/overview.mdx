@@ -74,12 +74,12 @@ flowchart TD
     H --> I{Credentials valid?}
     I -- no --> J[401 Unauthorized]
     I -- yes --> K[SecurityContextHolder populated]
-    K --> L{2FA enabled?}
-    L -- yes --> M[TwoFactorAuthenticationFilter\nvalidate Fineract-Platform-TFA-Token]
-    L -- no --> N[RequestResponseFilter]
-    M --> N
+    K --> N[RequestResponseFilter]
     N --> O[CorrelationHeaderFilter]
-    O --> P[FineractInstanceModeApiFilter]
+    O --> L{2FA enabled?}
+    L -- yes --> M[TwoFactorAuthenticationFilter\nvalidate Fineract-Platform-TFA-Token]
+    L -- no --> P[FineractInstanceModeApiFilter]
+    M --> P
     P --> Q[LoanCOBApiFilter]
     Q --> R[IdempotencyStoreFilter]
     R --> S[JAX-RS Resource]
@@ -91,7 +91,7 @@ flowchart TD
 
 | Order | Matcher | Purpose |
 |-------|---------|---------|
-| 1 | `/swagger-ui/**`, `/fineract.json`, `/actuator/**`, `/legacy-docs/**` | Public endpoints — `permitAll`, no JWT |
+| 1 | `/swagger-ui/**`, `/fineract.json`, `/actuator/**`, `/legacy-docs/apiLive.htm` | Public endpoints — `permitAll`, no JWT |
 | 2 | OAuth2 server endpoints (`/oauth2/**`) | Authorization Server — issues tokens |
 | 3 | All other requests | Resource Server — validates Bearer JWT |
 

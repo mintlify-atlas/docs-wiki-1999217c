@@ -160,13 +160,20 @@ tasks.register('devRun', org.springframework.boot.gradle.tasks.run.BootRun) {
                               'spotbugsMain', 'spotbugsTest',
                               'javadoc', 'javadocJar', 'modernizer',
                               'testClasses']
-            }.configureEach { enabled = false }
+            }.configureEach {
+                enabled = false
+            }
+            // Also disable error-prone compilation flags for speed
+            tasks.withType(JavaCompile).configureEach {
+                options.errorprone.enabled = false
+            }
         }
     }
-    // inherits all bootRun settings
+
+    // Inherit all bootRun settings
     classpath = bootRun.classpath
     mainClass = bootRun.mainClass
-    jvmArgs  = bootRun.jvmArgs
+    jvmArgs = bootRun.jvmArgs
 }
 ```
 

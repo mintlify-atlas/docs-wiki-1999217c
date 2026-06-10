@@ -18,7 +18,7 @@ Apache Fineract includes a Quartz-based scheduler framework that drives all back
     <br/>Package: `org.apache.fineract.infrastructure.jobs.domain`
   </Card>
   <Card title="SchedulerDetail" icon="gear">
-    Singleton entity that stores global scheduler state: whether the scheduler is `active` or in `standby` mode, and the `preferredJobName`.
+    Singleton entity (table `scheduler_detail`) that stores global scheduler state: `suspended` flag (whether the scheduler is in standby), `executeInstructionForMisfiredJobs`, and `resetSchedulerOnBootup`.
     <br/>Package: `org.apache.fineract.infrastructure.jobs.domain`
   </Card>
   <Card title="JobParameter" icon="sliders">

@@ -87,12 +87,17 @@ Every transition is driven by a `LoanEvent` value. Events are declared in `org.a
   | `LOAN_DISBURSAL_UNDO` | Disbursement reversed |
   | `LOAN_DISBURSAL_UNDO_LAST` | Last tranche disbursement reversed |
   | `LOAN_REPAYMENT_OR_WAIVER` | Repayment, waiver, or chargeback posted |
+  | `LOAN_RECOVERY_PAYMENT` | Post-write-off recovery payment posted |
   | `REPAID_IN_FULL` | Outstanding balance reaches zero |
   | `WRITE_OFF_OUTSTANDING` | Loan written off |
   | `WRITE_OFF_OUTSTANDING_UNDO` | Write-off reversed |
   | `LOAN_RESCHEDULE` | Loan closed for rescheduling |
   | `LOAN_OVERPAYMENT` | Client payment exceeds outstanding |
+  | `LOAN_CHARGE_PAYMENT` | Payment applied to a specific charge |
   | `LOAN_CLOSED` | Generic close event |
+  | `LOAN_EDIT_MULTI_DISBURSE_DATE` | Multi-disbursement tranche date edited |
+  | `LOAN_REFUND` | Refund posted against the loan |
+  | `LOAN_ADJUST_TRANSACTION` | Existing transaction adjusted or reversed |
   | `LOAN_FORECLOSURE` | Foreclosure recorded |
   | `LOAN_CREDIT_BALANCE_REFUND` | Overpayment refunded to client |
   | `LOAN_CHARGEBACK` | Chargeback applied |
@@ -103,6 +108,7 @@ Every transition is driven by a `LoanEvent` value. Events are declared in `org.a
   | `LOAN_CHARGE_ADDED` | Charge added to closed loan |
   | `LOAN_CHARGE_ADJUSTMENT` | Charge adjusted on closed loan |
   | `LOAN_CONTRACT_TERMINATION` | Contract termination applied |
+  | `INTERST_REBATE_OWED` | Interest rebate owed (legacy; note: enum name is intentionally misspelled in source) |
 </Accordion>
 
 ## Service Classes

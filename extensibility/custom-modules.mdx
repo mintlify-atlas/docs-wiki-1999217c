@@ -62,32 +62,38 @@ custom/acme/
 
 ### Custom COB Business Step (`acme/loan/cob`)
 
-A custom COB step implements the `LoanCOBBusinessStep` interface from `fineract-loan`:
+A custom COB step implements the `LoanCOBBusinessStep` interface from `fineract-loan`. The reference implementation in `custom/acme/loan/cob/` is `AcmeNoopBusinessStep`:
 
-```java custom/acme/loan/cob example
+```java custom/acme/loan/cob/AcmeNoopBusinessStep.java
+@Slf4j
 @Component
-@ConditionalOnProperty(...)
-public class AcmeLoanCOBStep implements LoanCOBBusinessStep {
+@RequiredArgsConstructor
+public class AcmeNoopBusinessStep implements LoanCOBBusinessStep, InitializingBean {
+
+    private static final String ENUM_STYLED_NAME = "ACME_LOAN_NOOP";
+    private static final String HUMAN_READABLE_NAME = "ACME Loan Noop";
+
+    // NOTE: just to demonstrate that dependency injection is working
+    private final LoanAccountDomainService loanAccountDomainService;
 
     @Override
-    public Loan execute(Loan loan) {
-        // custom per-loan COB logic
-        return loan;
+    public Loan execute(Loan input) {
+        return input;
     }
 
     @Override
     public String getEnumStyledName() {
-        return "ACME_CUSTOM_COB_STEP";
+        return ENUM_STYLED_NAME;
     }
 
     @Override
     public String getHumanReadableName() {
-        return "Acme Custom COB Step";
+        return HUMAN_READABLE_NAME;
     }
 }
 ```
 
-The step is registered in a Spring Boot `@Configuration` class in the companion `acme/loan/starter` module using `@ConditionalOnBean` or `@ConditionalOnProperty`.
+Custom steps are picked up automatically by Spring component scanning. The companion `acme/loan/starter` module wires them together via a Spring Boot auto-configuration class registered in `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
 
 ### Custom Loan Transaction Processor (`acme/loan/processor`)
 
